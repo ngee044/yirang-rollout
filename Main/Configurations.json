@@ -1,0 +1,14 @@
+{
+	"main_title": "yirang-rollout",
+	"write_file_log": 4,
+	"write_console_log": 4,
+	"write_interval": 1000,
+	"log_root_path": "",
+	"control_plane_url": "",
+	"heartbeat_seconds": 15,
+	"reconnect_max_seconds": 30,
+	"data_directory": "",
+	"artifact_cache_gb": 5,
+	"keep_previous_releases": 2,
+	"verify_release_signature": true
+}
