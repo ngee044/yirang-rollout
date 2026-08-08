@@ -1,0 +1,3 @@
+[submodule ".cpptoolkit"]
+	path = .cpptoolkit
+	url = https://github.com/ngee044/CppToolkit.git

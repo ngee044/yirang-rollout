@@ -1,0 +1,18 @@
+{
+    "builtin-baseline": "40f3c709db80acf154ac4b17a1f83c564ebd022e",
+    "dependencies": [
+        "gtest",
+        "lz4",
+        "cryptopp",
+        "efsw",
+        "boost-algorithm",
+        "boost-dll",
+        "boost-asio",
+        "boost-json",
+        "boost-system",
+        "boost-filesystem",
+        "boost-process",
+        "curl",
+        "openssl"
+    ]
+}
