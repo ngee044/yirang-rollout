@@ -45,10 +45,20 @@ set(BUILD_REDIS_LIB OFF CACHE BOOL "Build redis library")
 set(BUILD_RABBIT_MQ_LIB OFF CACHE BOOL "Build rabbitmq library")
 set(BUILD_KAFKA_LIB OFF CACHE BOOL "Build kafka library")
 set(BUILD_SAMPLES OFF CACHE BOOL "Build samples")
+
+# AWSService(S3·SQS)를 소비한다 (R-006). vcpkg 의 aws-sdk-cpp feature 가 함께 켜져야 한다.
+set(BUILD_AWS_LIB ON CACHE BOOL "Build aws library" FORCE)
 add_subdirectory(.cpptoolkit)
 
 # -------------------------------------------------------------------- targets --
-add_subdirectory(Main)
+# 모듈은 최상위 디렉터리 1개 = CMake 타겟 1개로 등록한다 (docs/CODING_CONVENTION.md §3).
+add_subdirectory(Artifact)
+add_subdirectory(Messaging)
+add_subdirectory(Process)
+add_subdirectory(Health)
+add_subdirectory(Release)
+add_subdirectory(YirangAgent)
+add_subdirectory(DeployCLI)
 
 if (BUILD_TESTS)
     enable_testing()
