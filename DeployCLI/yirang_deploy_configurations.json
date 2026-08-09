@@ -1,0 +1,11 @@
+{
+	"app_title": "yirang",
+	"control_plane_url": "",
+	"api_token": "",
+	"request_timeout_seconds": 30,
+	"output_format": "table",
+	"log_root_path": "",
+	"write_console_log": 4,
+	"write_file_log": 4,
+	"write_interval": 1000
+}

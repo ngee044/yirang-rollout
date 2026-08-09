@@ -1,0 +1,22 @@
+{
+	"main_title": "yirang-agent",
+	"write_file_log": 4,
+	"write_console_log": 4,
+	"write_interval": 1000,
+	"log_root_path": "",
+
+	"device_id": "",
+	"group": "",
+
+	"queue_url": "",
+	"result_queue_url": "",
+	"poll_wait_seconds": 20,
+
+	"version_root": "",
+	"service_root": "",
+	"keep_previous_releases": 2,
+
+	"s3_bucket": "",
+	"s3_region": "us-east-1",
+	"s3_endpoint": ""
+}
