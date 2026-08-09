@@ -13,6 +13,14 @@
         "boost-filesystem",
         "boost-process",
         "curl",
-        "openssl"
+        "openssl",
+        {
+            "name": "aws-sdk-cpp",
+            "default-features": false,
+            "features": [
+                "s3",
+                "sqs"
+            ]
+        }
     ]
 }
