@@ -1,0 +1,22 @@
+{
+	"main_title": "yirang-agent",
+	"write_file_log": 4,
+	"write_console_log": 4,
+	"write_interval": 1000,
+	"log_root_path": "",
+
+	"device_id": "kiosk-seoul-001",
+	"group": "kiosk",
+
+	"queue_url": "https://sqs.ap-northeast-2.amazonaws.com/000000000000/yirang-kiosk-001",
+	"result_queue_url": "https://sqs.ap-northeast-2.amazonaws.com/000000000000/yirang-results",
+	"poll_wait_seconds": 20,
+
+	"version_root": "C:/ProgramData/yirang/versions",
+	"service_root": "C:/Program Files/KioskApp",
+	"keep_previous_releases": 2,
+
+	"s3_bucket": "yirang-releases",
+	"s3_region": "us-east-1",
+	"s3_endpoint": ""
+}
