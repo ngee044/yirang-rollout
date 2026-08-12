@@ -15,8 +15,6 @@ namespace Artifact
 {
 	namespace
 	{
-		// Aws::InitAPI / ShutdownAPI 는 프로세스당 한 번이어야 한다. 함수 지역 정적으로 두어
-		// 첫 사용 시 초기화하고 프로세스 종료 시 정리한다.
 		class AwsRuntime
 		{
 		public:
@@ -40,7 +38,6 @@ namespace Artifact
 
 			if (!options.endpoint.empty())
 			{
-				// MinIO·LocalStack 은 사설 엔드포인트이고 로컬 HTTP 다. 인증서 검증을 요구하면 연결되지 않는다.
 				configuration.endpointOverride = options.endpoint.c_str();
 				configuration.scheme = Aws::Http::Scheme::HTTP;
 				configuration.verifySSL = false;
@@ -53,7 +50,6 @@ namespace Artifact
 		{
 			const auto configuration = make_configuration(options);
 
-			// 사설 엔드포인트는 가상 호스트 주소 방식(bucket.host)을 지원하지 않으므로 path-style 로 전환한다.
 			const bool use_virtual_addressing = options.endpoint.empty();
 
 			if (!options.access_key.empty())
@@ -127,7 +123,6 @@ namespace Artifact
 			return std::unexpected("bucket is required");
 		}
 
-		// 대상 디렉터리가 없으면 SDK 가 파일을 열지 못한다.
 		std::error_code error;
 		const auto parent = std::filesystem::path(local_path).parent_path();
 		if (!parent.empty())
@@ -163,4 +158,4 @@ namespace Artifact
 
 		return result.value();
 	}
-} // namespace Artifact
+}

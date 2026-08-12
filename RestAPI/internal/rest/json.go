@@ -11,11 +11,8 @@ import (
 	"github.com/hyunkyu/yirang-rollout/RestAPI/internal/apierr"
 )
 
-// maxRequestBytes caps a request body. A release manifest of a few hundred
-// artifacts stays far below this; anything larger is a mistake or an attack.
 const maxRequestBytes = 1 << 20
 
-// envelope is the single response shape for every endpoint, success or not.
 type envelope struct {
 	Success bool       `json:"success"`
 	Data    any        `json:"data,omitempty"`
@@ -27,10 +24,6 @@ type errorBody struct {
 	Message string `json:"message"`
 }
 
-// decodeJSON reads exactly one JSON object of type T from the request.
-//
-// Unknown fields are rejected rather than ignored: a misspelled "install_path"
-// would otherwise be dropped in silence and deploy an empty release.
 func decodeJSON[T any](w http.ResponseWriter, r *http.Request) (T, error) {
 	var value T
 
@@ -47,8 +40,6 @@ func decodeJSON[T any](w http.ResponseWriter, r *http.Request) (T, error) {
 		return value, decodeError(err)
 	}
 
-	// A second document in the same body means the client built the request
-	// incorrectly; only the first would ever be acted on.
 	if decoder.More() {
 		return value, apierr.BadRequest("request body must contain exactly one JSON object")
 	}
@@ -56,8 +47,6 @@ func decodeJSON[T any](w http.ResponseWriter, r *http.Request) (T, error) {
 	return value, nil
 }
 
-// requireJSONContentType rejects anything a browser could have sent without a
-// CORS preflight. See apierr.UnsupportedMedia for why that matters here.
 func requireJSONContentType(r *http.Request) error {
 	raw := r.Header.Get("Content-Type")
 
@@ -92,8 +81,6 @@ func decodeError(err error) error {
 }
 
 func writeJSON(logger *slog.Logger, w http.ResponseWriter, status int, body envelope) {
-	// Encode before touching the header so a marshal failure does not land
-	// after a status has already been committed.
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		logger.Error("cannot encode response", "error", err)
@@ -113,8 +100,6 @@ func writeData(logger *slog.Logger, w http.ResponseWriter, status int, data any)
 	writeJSON(logger, w, status, envelope{Success: true, Data: data})
 }
 
-// writeError maps any error onto its response. The wrapped cause is logged and
-// never sent, so an internal failure does not leak its detail to the client.
 func writeError(logger *slog.Logger, w http.ResponseWriter, r *http.Request, err error) {
 	apiError := apierr.From(err)
 

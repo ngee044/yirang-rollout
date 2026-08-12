@@ -13,15 +13,10 @@ using namespace Release;
 
 namespace
 {
-	// 알려진 SHA-256 값과 대조해 해시 구현 자체를 검증한다.
 	constexpr auto kEmptySha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 	constexpr auto kHelloSha256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 
-	auto fixed_time(void) -> std::chrono::system_clock::time_point
-	{
-		// 2023-11-14T22:13:20Z
-		return std::chrono::system_clock::from_time_t(1700000000);
-	}
+	auto fixed_time(void) -> std::chrono::system_clock::time_point { return std::chrono::system_clock::from_time_t(1700000000); }
 
 	class TemporaryTree
 	{
@@ -29,9 +24,6 @@ namespace
 		TemporaryTree(void)
 		{
 			static int sequence = 0;
-			// 병렬 ctest 는 TEST 하나당 별도 프로세스로 돌고 sequence 가 프로세스마다 1 부터 다시
-			// 시작한다. 프로세스 고유 토큰이 없으면 동시에 도는 두 케이스가 같은 경로를 공유하고,
-			// 먼저 끝난 쪽의 소멸자가 아직 쓰고 있는 파일을 지운다.
 			static const auto token = std::to_string(std::random_device{}());
 			root_ = std::filesystem::temp_directory_path() / ("yirang-release-test-" + token + "-" + std::to_string(++sequence));
 
@@ -120,7 +112,6 @@ TEST(ReleaseManifestTest, BuildRejectsMissingFileAndEmptyInput)
 	ASSERT_FALSE(no_id.has_value());
 }
 
-// 서로 다른 디렉터리의 같은 파일명은 설치 시 서로를 덮어쓴다
 TEST(ReleaseManifestTest, BuildRejectsDuplicateInstallPath)
 {
 	TemporaryTree tree;
@@ -165,7 +156,6 @@ TEST(ReleaseManifestTest, ParseRejectsMissingRequiredFields)
 	EXPECT_FALSE(ReleaseManifest::parse(R"({"release_id":"r","created_at":"x","artifacts":[{"sha256":"aa"}]})").has_value());
 }
 
-// 형식이 깨진 해시를 통과시키면 설치 전 검증이 무력화된다
 TEST(ReleaseManifestTest, ParseRejectsMalformedSha256)
 {
 	const auto too_short = ReleaseManifest::parse(R"({"release_id":"r","created_at":"x","artifacts":[{"install_path":"a.exe","sha256":"abc"}]})");
@@ -176,7 +166,6 @@ TEST(ReleaseManifestTest, ParseRejectsMalformedSha256)
 	EXPECT_FALSE(ReleaseManifest::parse(R"({"release_id":"r","created_at":"x","artifacts":[{"install_path":"a.exe","sha256":")" + non_hex + R"("}]})").has_value());
 }
 
-// 계약이 확장되어도 구버전 Agent 가 죽지 않아야 한다
 TEST(ReleaseManifestTest, ParseIgnoresUnknownFields)
 {
 	const std::string text = R"({"release_id":"r","created_at":"x","future_field":42,"artifacts":[{"install_path":"a.exe","sha256":")" + std::string(kHelloSha256)

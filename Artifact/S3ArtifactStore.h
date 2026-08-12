@@ -11,8 +11,6 @@ namespace AWSService
 
 namespace Artifact
 {
-	// CppToolkit AWSService::AWSS3Client 를 감싸는 구현.
-	// SDK 헤더가 여기서 새지 않도록 클라이언트를 전방 선언 + unique_ptr 로 감춘다.
 	class S3ArtifactStore : public IArtifactStore
 	{
 	public:
@@ -30,4 +28,4 @@ namespace Artifact
 		StoreOptions options_;
 		std::unique_ptr<AWSService::AWSS3Client> client_;
 	};
-} // namespace Artifact
+}

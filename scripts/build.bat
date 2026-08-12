@@ -1,13 +1,4 @@
 @echo off
-rem
-rem yirang-rollout build script for Windows (CMake + vcpkg).
-rem
-rem Usage:
-rem   scripts\build.bat [Release^|Debug] [--clean]
-rem
-rem Environment overrides:
-rem   VCPKG_ROOT   vcpkg checkout path (default: %USERPROFILE%\vcpkg)
-rem
 setlocal enabledelayedexpansion
 
 set SCRIPT_DIR=%~dp0

@@ -1,10 +1,22 @@
 {
 	"app_title": "yirang",
-	"control_plane_url": "https://control-plane.example.com",
-	"api_token": "replace-with-issued-token",
+
+	"control_plane_url": "http://127.0.0.1:8080",
+	"api_token": "",
 	"request_timeout_seconds": 30,
 	"output_format": "table",
-	"log_root_path": "logs/",
+
+	"upload_file_list": [
+		"C:/build/Release/app.exe",
+		"C:/build/Release/config.json"
+	],
+	"target_group": "kiosk",
+
+	"s3_bucket": "yirang-releases",
+	"s3_region": "ap-northeast-2",
+	"s3_endpoint": "",
+
+	"log_root_path": "",
 	"write_console_log": 4,
 	"write_file_log": 4,
 	"write_interval": 1000

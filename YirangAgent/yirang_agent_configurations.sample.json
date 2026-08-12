@@ -17,6 +17,25 @@
 	"keep_previous_releases": 2,
 
 	"s3_bucket": "yirang-releases",
-	"s3_region": "us-east-1",
-	"s3_endpoint": ""
+	"s3_region": "ap-northeast-2",
+	"s3_endpoint": "",
+	"service": {
+		"executable": "app.exe",
+		"arguments": [],
+		"working_directory": "",
+		"stop_timeout_seconds": 30,
+		"startup_timeout_seconds": 60
+	},
+
+	"health": {
+		"kind": "http",
+		"host": "127.0.0.1",
+		"port": 8080,
+		"path": "/healthz",
+		"expected_status": 200,
+		"timeout_ms": 2000,
+		"interval_ms": 1000,
+		"success_threshold": 2,
+		"failure_threshold": 3
+	}
 }

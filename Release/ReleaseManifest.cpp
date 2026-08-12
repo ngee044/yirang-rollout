@@ -158,7 +158,6 @@ namespace Release
 			manifest.created_at = buffer;
 		}
 
-		// 설치 경로는 파일명으로 정한다. 서로 다른 디렉터리의 같은 파일명은 설치 시 서로를 덮어쓰므로 거부한다.
 		std::set<std::string> claimed;
 
 		for (const auto& source : upload_file_list)
@@ -194,7 +193,6 @@ namespace Release
 			const auto size = std::filesystem::file_size(path, error);
 			if (error)
 			{
-				// 검사하지 않으면 표준이 돌려주는 -1 이 UINT64_MAX 로 매니페스트에 실린다.
 				return std::unexpected(std::format("cannot read size of '{}': {}", path.string(), error.message()));
 			}
 
@@ -299,7 +297,6 @@ namespace Release
 				return std::unexpected(sha256.error());
 			}
 
-			// 형식이 깨진 해시를 통과시키면 검증이 무력화되므로 여기서 거른다.
 			if (!is_sha256_hex(sha256.value()))
 			{
 				return std::unexpected(std::format("manifest artifact '{}' has a malformed sha256", install_path.value()));
@@ -319,4 +316,4 @@ namespace Release
 
 		return manifest;
 	}
-} // namespace Release
+}

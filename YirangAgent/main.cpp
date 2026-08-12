@@ -4,6 +4,7 @@
 #include "ArgumentParser.h"
 #include "Logger.h"
 #include "LogTypes.h"
+#include "PosixProcessSupervisor.h"
 #include "S3ArtifactStore.h"
 #include "SqsMessageConsumer.h"
 #include "SqsMessagePublisher.h"
@@ -25,7 +26,6 @@ using namespace YirangAgent;
 
 namespace
 {
-	// 신호 처리기에서는 async-signal-safe 한 조작만 한다. 종료 판단은 메인 루프가 한다.
 	std::atomic<bool> stopping{ false };
 
 	auto request_stop(int signal_number) -> void
@@ -53,6 +53,53 @@ namespace
 		options.wait_time_seconds = configurations.poll_wait_seconds();
 
 		return options;
+	}
+
+	auto make_service_spec(const Configurations& configurations) -> Deploy::ServiceSpec
+	{
+		Deploy::ServiceSpec spec;
+		spec.executable = configurations.service_executable();
+		spec.arguments = configurations.service_arguments();
+		spec.working_directory = configurations.service_working_directory();
+		spec.stop_timeout = std::chrono::seconds(configurations.stop_timeout_seconds());
+		spec.startup_timeout = std::chrono::seconds(configurations.startup_timeout_seconds());
+
+		return spec;
+	}
+
+	auto make_health_spec(const Configurations& configurations) -> Health::HealthCheckSpec
+	{
+		Health::HealthCheckSpec spec;
+		spec.kind = (configurations.health_kind() == "http")  ? Health::CheckKind::Http
+					: (configurations.health_kind() == "tcp") ? Health::CheckKind::Tcp
+															  : Health::CheckKind::Process;
+		spec.host = configurations.health_host();
+		spec.port = (uint16_t)configurations.health_port();
+		spec.path = configurations.health_path();
+		spec.expected_status = configurations.health_expected_status();
+		spec.timeout = std::chrono::milliseconds(configurations.health_timeout_ms());
+		spec.interval = std::chrono::milliseconds(configurations.health_interval_ms());
+		spec.success_threshold = configurations.health_success_threshold();
+		spec.failure_threshold = configurations.health_failure_threshold();
+
+		return spec;
+	}
+
+	auto make_engine(const Configurations& configurations) -> std::shared_ptr<Deploy::DeploymentEngine>
+	{
+		if (configurations.service_root().empty() || configurations.service_executable().empty())
+		{
+			return nullptr;
+		}
+
+		Install::InstallOptions install_options;
+		install_options.service_root = configurations.service_root();
+		install_options.keep_previous_releases = configurations.keep_previous_releases();
+
+		auto installer = std::make_shared<Install::ReleaseInstaller>(install_options);
+		auto supervisor = std::make_shared<Process::PosixProcessSupervisor>();
+
+		return std::make_shared<Deploy::DeploymentEngine>(installer, supervisor, make_service_spec(configurations), make_health_spec(configurations));
 	}
 
 	auto make_agent_options(const Configurations& configurations) -> AgentOptions
@@ -85,24 +132,34 @@ auto main(int32_t argc, char* argv[]) -> int32_t
 	auto required = configurations->validate_required();
 	if (!required)
 	{
-		// 큐도 버킷도 없이 뜨면 아무 일도 하지 못한 채 살아 있게 된다. 기동을 실패시킨다.
 		Logger::handle().write(LogTypes::Error, std::format("configuration incomplete: {}", required.error()));
 		exit_code = 1;
 	}
 	else
 	{
-		// AWS SDK 초기화와 클라이언트 생성이 수 초 걸린다(콜드 스타트 실측 6초). 그 구간에 SIGTERM 이
-		// 오면 기본 처리로 프로세스가 즉시 죽어 버퍼된 로그까지 유실되므로, 무엇을 만들기 전에 등록한다.
 		std::signal(SIGINT, request_stop);
 		std::signal(SIGTERM, request_stop);
 
 		auto store = std::make_shared<Artifact::S3ArtifactStore>(make_store_options(*configurations));
 
-		// 봉투의 reply_queue_url 이 결과 큐를 지정할 수 있으므로 발행자는 항상 만든다.
-		// 설정과 봉투 모두 비어 있을 때만 AgentService 가 보고를 건너뛴다.
 		std::shared_ptr<Messaging::IMessagePublisher> publisher = std::make_shared<Messaging::SqsMessagePublisher>(make_queue_options(*configurations));
 
-		auto service = std::make_shared<AgentService>(make_agent_options(*configurations), store, publisher);
+		auto engine = make_engine(*configurations);
+		if (engine == nullptr)
+		{
+			Logger::handle().write(LogTypes::Warning, "service_root or service.executable is not configured — apply_version and rollback_version will fail");
+		}
+
+		auto service = std::make_shared<AgentService>(make_agent_options(*configurations), store, publisher, engine);
+
+		if (engine != nullptr)
+		{
+			auto resumed = engine->start_active();
+			if (resumed)
+			{
+				Logger::handle().write(LogTypes::Information, "restarted the active release from state.json");
+			}
+		}
 
 		Messaging::SqsMessageConsumer consumer(make_queue_options(*configurations));
 
@@ -112,7 +169,6 @@ auto main(int32_t argc, char* argv[]) -> int32_t
 				auto handled = service->handle(body);
 				if (!handled)
 				{
-					// 실패를 삼키면 어떤 메시지가 왜 실패했는지 남지 않는다.
 					Logger::handle().write(LogTypes::Error, std::format("message handling failed: {}", handled.error()));
 				}
 

@@ -13,6 +13,30 @@ using namespace Utilities;
 
 namespace DeployCli
 {
+	namespace
+	{
+		auto split(const std::string& text, char delimiter) -> std::vector<std::string>
+		{
+			std::vector<std::string> pieces;
+
+			std::string::size_type start = 0;
+			while (start <= text.size())
+			{
+				const auto end = text.find(delimiter, start);
+				pieces.push_back(text.substr(start, (end == std::string::npos) ? std::string::npos : end - start));
+
+				if (end == std::string::npos)
+				{
+					break;
+				}
+
+				start = end + 1;
+			}
+
+			return pieces;
+		}
+	}
+
 	Configurations::Configurations(const ArgumentParser& arguments, const std::string& config_file_name)
 		: root_path_("")
 		, config_path_("")
@@ -21,6 +45,11 @@ namespace DeployCli
 		, api_token_("")
 		, request_timeout_seconds_(30)
 		, output_format_("table")
+		, upload_file_list_()
+		, target_group_("")
+		, s3_bucket_("")
+		, s3_region_("us-east-1")
+		, s3_endpoint_("")
 		, log_root_path_("")
 		, write_console_log_((int)LogTypes::Information)
 		, write_file_log_((int)LogTypes::Information)
@@ -58,6 +87,16 @@ namespace DeployCli
 
 	auto Configurations::output_format(void) const -> std::string { return output_format_; }
 
+	auto Configurations::upload_file_list(void) const -> std::vector<std::string> { return upload_file_list_; }
+
+	auto Configurations::target_group(void) const -> std::string { return target_group_; }
+
+	auto Configurations::s3_bucket(void) const -> std::string { return s3_bucket_; }
+
+	auto Configurations::s3_region(void) const -> std::string { return s3_region_; }
+
+	auto Configurations::s3_endpoint(void) const -> std::string { return s3_endpoint_; }
+
 	auto Configurations::log_root_path(void) const -> std::string { return log_root_path_; }
 
 	auto Configurations::write_console_log(void) const -> LogTypes { return (LogTypes)write_console_log_; }
@@ -82,14 +121,31 @@ namespace DeployCli
 		return {};
 	}
 
+	auto Configurations::validate_for_deploy(void) const -> std::expected<void, std::string>
+	{
+		auto required = validate_required();
+		if (!required)
+		{
+			return required;
+		}
+
+		if (upload_file_list_.empty())
+		{
+			return std::unexpected("upload_file_list is empty (set it in the configuration file or pass --upload_file_list a.exe,b.dll)");
+		}
+
+		if (s3_bucket_.empty())
+		{
+			return std::unexpected("s3_bucket is required for deploy (set it in the configuration file or pass --s3_bucket)");
+		}
+
+		return {};
+	}
+
 	auto Configurations::load(void) -> void
 	{
-		// CLI 는 로거 기동 전에 설정을 읽으므로 Logger 대신 load_warning_ 으로 사유를 전달한다.
 		File source;
 
-		// File::open 은 읽기 모드에서도 부모 디렉터리를 만들며 error_code 없는 create_directories 를
-		// 쓰므로 권한 없는 --config_path 하나로 filesystem_error 를 던진다. std::locale("") 도 설치되지
-		// 않은 로캘이면 던진다. 둘 다 Logger 기동 전이라 진단 없이 abort 되므로 여기서 반환값으로 바꾼다.
 		std::expected<void, std::string> opened;
 		try
 		{
@@ -133,7 +189,6 @@ namespace DeployCli
 
 		auto message = parsed_value.as_object();
 
-		// JSON 키와 멤버 이름을 1:1로 유지하기 위한 헬퍼 (키 불일치 실수 방지)
 		auto read_string = [&message](const char* key, std::string& target) -> void
 		{
 			if (message.contains(key) && message.at(key).is_string())
@@ -149,11 +204,34 @@ namespace DeployCli
 			}
 		};
 
+		auto read_string_array = [&message](const char* key, std::vector<std::string>& target) -> void
+		{
+			if (!message.contains(key) || !message.at(key).is_array())
+			{
+				return;
+			}
+
+			target.clear();
+			for (const auto& element : message.at(key).as_array())
+			{
+				if (element.is_string())
+				{
+					target.push_back(element.as_string().c_str());
+				}
+			}
+		};
+
 		read_string("app_title", app_title_);
 		read_string("control_plane_url", control_plane_url_);
 		read_string("api_token", api_token_);
 		read_int("request_timeout_seconds", request_timeout_seconds_);
 		read_string("output_format", output_format_);
+
+		read_string_array("upload_file_list", upload_file_list_);
+		read_string("target_group", target_group_);
+		read_string("s3_bucket", s3_bucket_);
+		read_string("s3_region", s3_region_);
+		read_string("s3_endpoint", s3_endpoint_);
 
 		read_string("log_root_path", log_root_path_);
 		read_int("write_console_log", write_console_log_);
@@ -173,6 +251,43 @@ namespace DeployCli
 		if (string_target != std::nullopt)
 		{
 			api_token_ = string_target.value();
+		}
+
+		string_target = arguments.to_string("--target_group");
+		if (string_target != std::nullopt)
+		{
+			target_group_ = string_target.value();
+		}
+
+		string_target = arguments.to_string("--s3_bucket");
+		if (string_target != std::nullopt)
+		{
+			s3_bucket_ = string_target.value();
+		}
+
+		string_target = arguments.to_string("--s3_region");
+		if (string_target != std::nullopt)
+		{
+			s3_region_ = string_target.value();
+		}
+
+		string_target = arguments.to_string("--s3_endpoint");
+		if (string_target != std::nullopt)
+		{
+			s3_endpoint_ = string_target.value();
+		}
+
+		auto upload_target = arguments.to_string("--upload_file_list");
+		if (upload_target != std::nullopt)
+		{
+			upload_file_list_.clear();
+			for (const auto& element : split(upload_target.value(), ','))
+			{
+				if (!element.empty())
+				{
+					upload_file_list_.push_back(element);
+				}
+			}
 		}
 
 		string_target = arguments.to_string("--output_format");
@@ -217,7 +332,6 @@ namespace DeployCli
 
 	auto Configurations::validate_configuration(void) -> void
 	{
-		// Logger는 log_root 뒤에 구분자를 붙이지 않고 파일명을 이어 붙이므로 후행 구분자를 보장한다.
 		if (log_root_path_.empty())
 		{
 			log_root_path_ = root_path_;
@@ -227,7 +341,6 @@ namespace DeployCli
 			log_root_path_ += '/';
 		}
 
-		// app_title은 로그 파일명 구성요소이므로 경로 구분자를 허용하지 않는다.
 		std::replace(app_title_.begin(), app_title_.end(), '/', '_');
 		std::replace(app_title_.begin(), app_title_.end(), '\\', '_');
 
@@ -256,4 +369,4 @@ namespace DeployCli
 			output_format_ = "table";
 		}
 	}
-} // namespace DeployCli
+}

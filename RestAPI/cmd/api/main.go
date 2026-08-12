@@ -1,5 +1,3 @@
-// Command api is the yirang-rollout deployment REST API: it accepts a release
-// from the CLI and fans the matching command out to every device queue.
 package main
 
 import (
@@ -40,8 +38,6 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("load configuration: %w", err)
 	}
 
-	// The signal context is cancelled on the first SIGINT/SIGTERM; a second one
-	// is left to the default handler so a stuck shutdown can still be killed.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -61,8 +57,6 @@ func run(logger *slog.Logger) error {
 		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
 
-	// Bind before announcing, so "listening" is never logged for a port that
-	// was already taken.
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", server.Addr, err)
@@ -81,9 +75,6 @@ func run(logger *slog.Logger) error {
 		"result_queue_set", cfg.ResultQueueURL != "",
 	)
 
-	// The API has no authentication. On loopback that is fine — anyone who can
-	// reach it can already read the AWS credentials it would be protecting.
-	// Off loopback it is not, and the operator has to be told plainly.
 	if !cfg.IsLoopback() {
 		logger.Warn("listening beyond loopback WITHOUT authentication",
 			"bind_address", cfg.BindAddress,
@@ -100,8 +91,6 @@ func run(logger *slog.Logger) error {
 		logger.Info("shutdown requested")
 	}
 
-	// In-flight requests get a bounded window; the timeout is separate from the
-	// signal context, which is already cancelled by this point.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 
@@ -121,12 +110,9 @@ func newSQSClient(ctx context.Context, cfg *config.Config) (*sqs.Client, error) 
 		return sqs.NewFromConfig(awsCfg), nil
 	}
 
-	// A custom endpoint means LocalStack or another SQS-compatible service.
 	return sqs.NewFromConfig(awsCfg, func(o *sqs.Options) { o.BaseEndpoint = &cfg.AWSEndpoint }), nil
 }
 
-// logLevel is read straight from the environment because logging is set up
-// before the configuration is loaded, so a load failure is still logged.
 func logLevel() slog.Level {
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(os.Getenv("LOG_LEVEL"))); err != nil {

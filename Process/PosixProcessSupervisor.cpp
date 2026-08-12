@@ -27,7 +27,6 @@ namespace Process
 		constexpr auto kExecFailedExitCode = 127;
 		constexpr auto kPollInterval = std::chrono::milliseconds(20);
 
-		// fork 이후 자식은 async-signal-safe 함수만 쓸 수 있으므로 문자열 배열을 미리 만들어 둔다.
 		auto build_arguments(const ProcessStartOptions& options, std::vector<std::string>& storage) -> std::vector<char*>
 		{
 			storage.clear();
@@ -52,7 +51,6 @@ namespace Process
 		{
 			storage.clear();
 
-			// 같은 이름이 지정되면 부모 값을 버려야 하므로 덮어쓸 키를 먼저 모은다.
 			for (char** entry = YIRANG_ENVIRON; entry != nullptr && *entry != nullptr; ++entry)
 			{
 				const std::string line(*entry);
@@ -117,8 +115,6 @@ namespace Process
 		auto argument_pointers = build_arguments(options, argument_storage);
 		auto environment_pointers = build_environment(options, environment_storage);
 
-		// exec 실패는 자식이 이미 태어난 뒤에 일어난다. 실패 사유를 부모로 되돌리려면 별도 통로가 필요하다.
-		// CLOEXEC 파이프를 쓰면 exec 성공 시 자동으로 닫혀 EOF 가 곧 성공 신호가 된다.
 		int report[2] = { -1, -1 };
 		if (::pipe(report) != 0)
 		{
@@ -149,7 +145,6 @@ namespace Process
 		{
 			::close(report[0]);
 
-			// 자식을 자기 자신의 프로세스 그룹 리더로 만들어 손자까지 한 번에 신호를 보낼 수 있게 한다.
 			::setpgid(0, 0);
 
 			if (!working_directory.empty() && ::chdir(working_directory.c_str()) != 0)
@@ -168,7 +163,6 @@ namespace Process
 
 		::close(report[1]);
 
-		// 부모도 setpgid 를 호출해 자식이 exec 하기 전 신호를 보내는 경쟁을 없앤다(둘 중 먼저 성공한 쪽이 유효).
 		::setpgid(child, child);
 
 		int child_errno = 0;
@@ -212,7 +206,6 @@ namespace Process
 			return {};
 		}
 
-		// 음수 pid 는 프로세스 그룹 전체를 가리킨다. 자식이 띄운 손자까지 함께 정리한다.
 		if (::kill(-static_cast<pid_t>(handle.id), SIGTERM) != 0 && errno != ESRCH)
 		{
 			return std::unexpected(std::format("cannot send SIGTERM to {}: {}", handle.id, std::strerror(errno)));
@@ -235,7 +228,6 @@ namespace Process
 			std::this_thread::sleep_for(kPollInterval);
 		}
 
-		// graceful 종료를 무시하는 프로세스가 배포를 막지 않도록 강제 종료로 폴백한다 (FR-PRC-01).
 		if (::kill(-static_cast<pid_t>(handle.id), SIGKILL) != 0 && errno != ESRCH)
 		{
 			return std::unexpected(std::format("cannot send SIGKILL to {}: {}", handle.id, std::strerror(errno)));
@@ -276,7 +268,6 @@ namespace Process
 
 		if (result < 0)
 		{
-			// ECHILD 는 우리 자식이 아니거나 이미 수확된 경우다. 상태를 단정할 수 없으므로 Unknown 으로 보고한다.
 			if (errno == ECHILD)
 			{
 				return ProcessStatus{ ProcessState::Unknown, std::nullopt, std::nullopt };
@@ -323,4 +314,4 @@ namespace Process
 
 		return status;
 	}
-} // namespace Process
+}

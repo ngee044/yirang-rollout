@@ -10,7 +10,6 @@ import (
 
 type middleware func(http.Handler) http.Handler
 
-// statusWriter remembers what was written so the access log can report it.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -55,7 +54,6 @@ func logRequests(logger *slog.Logger) middleware {
 	}
 }
 
-// recoverPanic keeps one bad request from taking the process down with it.
 func recoverPanic(logger *slog.Logger) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -65,8 +63,6 @@ func recoverPanic(logger *slog.Logger) middleware {
 					return
 				}
 
-				// A panic after the handler already committed a status cannot
-				// be turned into a 500, so only the log is left.
 				logger.Error("panic recovered", "path", r.URL.Path, "panic", recovered, "stack", string(debug.Stack()))
 
 				writeJSON(logger, w, http.StatusInternalServerError, envelope{
@@ -80,9 +76,6 @@ func recoverPanic(logger *slog.Logger) middleware {
 	}
 }
 
-// withTimeout bounds how long a handler may spend downstream. The deadline is
-// carried on the context so the SQS calls are cancelled too, rather than
-// running on after the client has been answered.
 func withTimeout(budget time.Duration) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -12,8 +12,6 @@ using namespace Messaging;
 
 namespace
 {
-	// LocalStack 이 없는 환경에서 실패하지 않도록 통합 테스트는 환경변수로 켠다.
-	//   YIRANG_TEST_SQS_ENDPOINT=http://localhost:4566 YIRANG_TEST_SQS_QUEUE_URL=... ctest
 	auto environment(const char* name) -> std::string
 	{
 		const char* value = std::getenv(name);
@@ -24,7 +22,6 @@ namespace
 	auto local_options(void) -> QueueOptions
 	{
 		QueueOptions options;
-		// 닿지 않는 주소를 써서 네트워크 호출 전에 걸리는 검증만 확인한다.
 		options.endpoint = "http://127.0.0.1:1";
 		options.access_key = "test";
 		options.secret_key = "test";
@@ -33,7 +30,6 @@ namespace
 	}
 }
 
-// 핸들러 없이 소비를 시작하면 받은 메시지가 조용히 사라진다
 TEST(MessagingTest, ConsumerRefusesToStartWithoutHandler)
 {
 	auto options = local_options();
@@ -71,7 +67,6 @@ TEST(MessagingTest, ConsumerRejectsNullHandler)
 	EXPECT_NE(result.error().find("null"), std::string::npos);
 }
 
-// 소비를 시작한 적 없어도 stop() 이 안전해야 한다 (main 의 종료 경로가 항상 부른다)
 TEST(MessagingTest, ConsumerStopIsSafeBeforeStart)
 {
 	SqsMessageConsumer consumer(local_options());
@@ -107,7 +102,6 @@ TEST(MessagingTest, OptionsAreRetained)
 	EXPECT_EQ(consumer.options().visibility_timeout_seconds, 60);
 }
 
-// 발행 → 소비 왕복. LocalStack 이 있을 때만 실행된다.
 TEST(MessagingIntegrationTest, PublishedMessageReachesConsumer)
 {
 	const auto endpoint = environment("YIRANG_TEST_SQS_ENDPOINT");

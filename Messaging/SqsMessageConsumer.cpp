@@ -11,8 +11,6 @@ namespace Messaging
 {
 	namespace
 	{
-		// Aws::InitAPI / ShutdownAPI 는 프로세스당 한 번이어야 한다. Artifact 모듈과 별개로 초기화되어도
-		// SDK 가 참조 계수를 유지하지 않으므로, 두 모듈이 같은 지역 정적 패턴을 쓰되 각자 한 번만 호출한다.
 		class AwsRuntime
 		{
 		public:
@@ -85,7 +83,6 @@ namespace Messaging
 			return std::unexpected("handler is null");
 		}
 
-		// 소비 스레드가 호출 중인 std::function 을 교체하면 데이터 레이스다. 등록은 start 이전만 허용한다.
 		if (running())
 		{
 			return std::unexpected("handler cannot be replaced while running");
@@ -104,8 +101,6 @@ namespace Messaging
 
 	auto SqsMessageConsumer::start(void) -> std::expected<void, std::string>
 	{
-		// 재호출하면 툴킷이 stop → 워커 join 으로 내려가는데 소비 루프 플래그가 내려가지 않아
-		// join 이 영원히 반환하지 않는다. 진입에서 막는다.
 		if (running())
 		{
 			return std::unexpected("consumer is already running");
@@ -116,13 +111,11 @@ namespace Messaging
 			return std::unexpected("queue_url is required");
 		}
 
-		// 핸들러 없이 소비를 시작하면 받은 메시지가 조용히 사라진다.
 		if (!handler_registered_)
 		{
 			return std::unexpected("handler must be registered before start");
 		}
 
-		// AWSSQSBase::start() 가 워커를 만든 뒤에야 소비 루프를 걸 수 있다.
 		auto started = consumer_->start();
 		if (!started)
 		{
@@ -147,10 +140,9 @@ namespace Messaging
 			return;
 		}
 
-		// 소비 루프를 먼저 멈춰야 워커 종료 중에 새 메시지를 잡지 않는다.
 		(void)consumer_->stop_consume();
 		consumer_->stop();
 	}
 
 	auto SqsMessageConsumer::running(void) const -> bool { return (consumer_ != nullptr) && consumer_->is_running(); }
-} // namespace Messaging
+}

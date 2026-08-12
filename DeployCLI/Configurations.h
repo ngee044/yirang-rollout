@@ -7,20 +7,19 @@
 #include <expected>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace DeployCli
 {
-	// yirang CLI 설정. Agent 측 Configuration 모듈과 별개로, CLI 는 Control Plane REST API
-	// 클라이언트로서 필요한 값만 다룬다 (yirang-rollout-architecture.md §34).
 	class Configurations
 	{
 	public:
 		Configurations(const Utilities::ArgumentParser& arguments, const std::string& config_file_name = "yirang_deploy_configurations.json");
 
-		// 필수 설정이 비어 있으면 명령 실행을 막을 근거를 제공한다.
 		auto validate_required(void) const -> std::expected<void, std::string>;
 
-		// 설정 파일을 읽지 못했더라도 기본값으로 동작하므로 실패가 아니라 경고로 남긴다.
+		auto validate_for_deploy(void) const -> std::expected<void, std::string>;
+
 		auto load_warning(void) const -> std::optional<std::string>;
 
 		auto root_path(void) const -> std::string;
@@ -30,6 +29,15 @@ namespace DeployCli
 		auto api_token(void) const -> std::string;
 		auto request_timeout_seconds(void) const -> int;
 		auto output_format(void) const -> std::string;
+
+		auto upload_file_list(void) const -> std::vector<std::string>;
+
+		auto target_group(void) const -> std::string;
+
+		auto s3_bucket(void) const -> std::string;
+		auto s3_region(void) const -> std::string;
+
+		auto s3_endpoint(void) const -> std::string;
 
 		auto log_root_path(void) const -> std::string;
 		auto write_console_log(void) const -> Utilities::LogTypes;
@@ -53,6 +61,13 @@ namespace DeployCli
 		int request_timeout_seconds_;
 		std::string output_format_;
 
+		std::vector<std::string> upload_file_list_;
+		std::string target_group_;
+
+		std::string s3_bucket_;
+		std::string s3_region_;
+		std::string s3_endpoint_;
+
 		std::string log_root_path_;
 		int write_console_log_;
 		int write_file_log_;
@@ -63,4 +78,4 @@ namespace DeployCli
 
 		std::optional<std::string> load_warning_;
 	};
-} // namespace DeployCli
+}

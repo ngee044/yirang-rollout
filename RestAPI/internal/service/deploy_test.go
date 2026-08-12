@@ -55,7 +55,6 @@ func (p *fakePublisher) Send(_ context.Context, queueURL, body string) (string, 
 	return "msg-" + queueURL, nil
 }
 
-// anyBody returns one published body; every target receives the same envelope.
 func (p *fakePublisher) anyBody(t *testing.T) string {
 	t.Helper()
 
@@ -134,7 +133,6 @@ func TestDeployFansOutToTheWholeGroup(t *testing.T) {
 	}
 }
 
-// A large fleet must not open one connection per device at once.
 func TestDeployBoundsConcurrency(t *testing.T) {
 	svc, publisher, _ := newService(t, fleet(64))
 
@@ -147,7 +145,6 @@ func TestDeployBoundsConcurrency(t *testing.T) {
 	}
 }
 
-// Deliveries must stay in configuration order so the response is diffable.
 func TestDeployKeepsDeliveryOrder(t *testing.T) {
 	cfg := fleet(5)
 	svc, _, _ := newService(t, cfg)
@@ -164,7 +161,6 @@ func TestDeployKeepsDeliveryOrder(t *testing.T) {
 	}
 }
 
-// One unreachable queue must not stop the rest of the fan-out.
 func TestDeployReportsPartialFailure(t *testing.T) {
 	cfg := fleet(3)
 	svc, publisher, _ := newService(t, cfg)
@@ -186,8 +182,6 @@ func TestDeployReportsPartialFailure(t *testing.T) {
 	}
 }
 
-// Every rule here mirrors Artifact::make_object_key, so a request the agent
-// would reject never reaches a queue.
 func TestDeployRejectsInvalidRequests(t *testing.T) {
 	tests := map[string]func(*DeployRequest){
 		"no release_id":        func(r *DeployRequest) { r.ReleaseID = "" },
@@ -222,7 +216,6 @@ func TestDeployRejectsInvalidRequests(t *testing.T) {
 	}
 }
 
-// The agent compares against a lowercase digest.
 func TestDeployNormalizesHashCase(t *testing.T) {
 	svc, publisher, _ := newService(t, fleet(1))
 
@@ -262,7 +255,6 @@ func TestCommandRejectsUnsupported(t *testing.T) {
 	}
 }
 
-// apply_version and rollback_version read release_id out of the payload.
 func TestCommandRequiresReleaseIDWhereTheAgentReadsIt(t *testing.T) {
 	for _, command := range []string{models.CommandApplyVersion, models.CommandRollbackVersion} {
 		t.Run(command, func(t *testing.T) {
@@ -281,7 +273,6 @@ func TestCommandRequiresReleaseIDWhereTheAgentReadsIt(t *testing.T) {
 	}
 }
 
-// current_status carries nothing; the agent expects an object, not null.
 func TestCommandDefaultsEmptyPayloadToAnObject(t *testing.T) {
 	svc, publisher, _ := newService(t, fleet(1))
 
@@ -298,7 +289,6 @@ func TestCommandDefaultsEmptyPayloadToAnObject(t *testing.T) {
 	}
 }
 
-// Re-encoding through map[string]any would turn this into 1.2345678901234e+13.
 func TestCommandForwardsPayloadVerbatim(t *testing.T) {
 	svc, publisher, _ := newService(t, fleet(1))
 
@@ -327,7 +317,6 @@ func TestCommandRejectsMalformedPayload(t *testing.T) {
 	}
 }
 
-// The envelope must stay byte-compatible with YirangAgent/AgentMessage.cpp.
 func TestPublishedEnvelopeMatchesTheAgentContract(t *testing.T) {
 	svc, publisher, _ := newService(t, fleet(1))
 
@@ -373,14 +362,11 @@ func TestResultsDecodesReports(t *testing.T) {
 	if batch.Reports[0].DeviceID != "pc-001" {
 		t.Errorf("device_id = %q", batch.Reports[0].DeviceID)
 	}
-	// Everything read is acknowledged, including what could not be decoded;
-	// leaving it would make it redeliver forever.
 	if len(receiver.deleted) != 2 {
 		t.Errorf("acknowledged %d messages, want 2", len(receiver.deleted))
 	}
 }
 
-// A failed acknowledgement means a duplicate later, never a lost report.
 func TestResultsReturnsReportsEvenIfAcknowledgementFails(t *testing.T) {
 	svc, _, receiver := newService(t, fleet(1))
 	receiver.messages = []queue.Message{{ID: "1", Body: `{"device_id":"pc-001","success":true}`}}
@@ -414,7 +400,6 @@ func TestResultsPropagatesReceiveFailure(t *testing.T) {
 	}
 }
 
-// /commands 로 같은 명령을 보내면 /deployments 의 검증을 우회할 수 있었다.
 func TestCommandValidatesDownloadPayloadLikeDeploy(t *testing.T) {
 	bad := map[string]string{
 		"empty artifacts":  `{"release_id":"rel_1","artifacts":[]}`,
@@ -441,7 +426,6 @@ func TestCommandValidatesDownloadPayloadLikeDeploy(t *testing.T) {
 	}
 }
 
-// "." 과 ".." 는 구분자를 포함하지 않아 종전 검사를 통과했다.
 func TestDeployRejectsPathReferenceReleaseID(t *testing.T) {
 	for _, releaseID := range []string{".", ".."} {
 		t.Run(releaseID, func(t *testing.T) {
@@ -460,7 +444,6 @@ func TestDeployRejectsPathReferenceReleaseID(t *testing.T) {
 	}
 }
 
-// 부분 실패는 202 지만 0건 수락은 성공이 아니다.
 func TestPublishFailsWhenNoTargetAccepts(t *testing.T) {
 	cfg := fleet(2)
 	svc, publisher, _ := newService(t, cfg)

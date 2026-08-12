@@ -27,7 +27,6 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.RequestTimeout <= 0 {
 		t.Errorf("RequestTimeout = %v, want a positive budget", cfg.RequestTimeout)
 	}
-	// The API is unauthenticated, so exposure must be opted into, not defaulted.
 	if cfg.BindAddress != "127.0.0.1" || !cfg.IsLoopback() {
 		t.Errorf("BindAddress = %q, want loopback by default", cfg.BindAddress)
 	}
@@ -64,7 +63,6 @@ func TestValidateRejectsEmptyBindAddress(t *testing.T) {
 	}
 }
 
-// Without a queue the server would accept requests and publish nothing.
 func TestLoadRequiresDeviceQueues(t *testing.T) {
 	t.Setenv("DEVICE_QUEUES", "")
 
@@ -73,7 +71,6 @@ func TestLoadRequiresDeviceQueues(t *testing.T) {
 	}
 }
 
-// A typo in a numeric variable must not be swallowed by the default.
 func TestLoadRejectsMalformedInteger(t *testing.T) {
 	t.Setenv("DEVICE_QUEUES", oneQueue)
 	t.Setenv("PORT", "8O80")
@@ -116,7 +113,6 @@ func TestValidateRejectsDuplicates(t *testing.T) {
 	}
 }
 
-// SQS caps a receive and a delete batch at 10.
 func TestValidateBoundsBatchSize(t *testing.T) {
 	cfg := &Config{Port: 8080, BindAddress: "127.0.0.1", ResultBatchSize: 11, DeviceQueues: []DeviceQueue{{Name: "pc", URL: "u"}}}
 
@@ -138,7 +134,6 @@ func TestQueuesForGroup(t *testing.T) {
 	if got := len(cfg.QueuesForGroup("signage")); got != 1 {
 		t.Errorf("signage group = %d queues, want 1", got)
 	}
-	// An empty group is how a broadcast is expressed.
 	if got := len(cfg.QueuesForGroup("")); got != 3 {
 		t.Errorf("empty group = %d queues, want all 3", got)
 	}
@@ -147,7 +142,6 @@ func TestQueuesForGroup(t *testing.T) {
 	}
 }
 
-// 결과 큐가 디바이스 큐와 같으면 결과 조회가 미수신 명령을 삭제한다.
 func TestValidateRejectsResultQueueThatIsAlsoADeviceQueue(t *testing.T) {
 	cfg := &Config{
 		Port: 8080, BindAddress: "127.0.0.1", ResultBatchSize: 10,

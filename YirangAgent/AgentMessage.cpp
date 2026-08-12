@@ -38,8 +38,6 @@ namespace YirangAgent
 			return std::unexpected("agent message field 'command' is empty");
 		}
 
-		// payload 는 핸들러마다 형태가 다르다. 객체면 원문을 유지해 핸들러가 다시 파싱하게 하고,
-		// 문자열이면 그대로 쓴다. 없으면 빈 객체로 둔다.
 		if (root.contains("payload"))
 		{
 			const auto& payload = root.at("payload");
@@ -63,7 +61,6 @@ namespace YirangAgent
 		boost::json::object root;
 		root["command"] = message.command;
 
-		// payload 가 JSON 이면 중첩 객체로, 아니면 문자열로 싣는다.
 		boost::json::value payload;
 		try
 		{
@@ -82,4 +79,4 @@ namespace YirangAgent
 
 		return boost::json::serialize(root);
 	}
-} // namespace YirangAgent
+}

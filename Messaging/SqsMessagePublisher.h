@@ -12,8 +12,6 @@ namespace AWSService
 
 namespace Messaging
 {
-	// CppToolkit AWSService::AWSSQSPublisher 를 감싸는 구현.
-	// SDK 헤더가 새지 않도록 발행자를 전방 선언 + unique_ptr 로 감춘다.
 	class SqsMessagePublisher : public IMessagePublisher
 	{
 	public:
@@ -28,4 +26,4 @@ namespace Messaging
 		QueueOptions options_;
 		std::unique_ptr<AWSService::AWSSQSPublisher> publisher_;
 	};
-} // namespace Messaging
+}

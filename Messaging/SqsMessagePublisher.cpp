@@ -13,8 +13,6 @@ namespace Messaging
 {
 	namespace
 	{
-		// Aws::InitAPI / ShutdownAPI 는 프로세스당 한 번이어야 한다. 함수 지역 정적으로 두어
-		// 첫 사용 시 초기화하고 프로세스 종료 시 정리한다.
 		class AwsRuntime
 		{
 		public:
@@ -79,7 +77,6 @@ namespace Messaging
 			return std::unexpected("message body is empty");
 		}
 
-		// FIFO 큐가 아니면 group id 는 무시된다. 표준 큐에서도 안전하도록 빈 값을 넘긴다.
 		auto sent = publisher_->send_message_to(Aws::String(queue_url.c_str()), Aws::String(body.c_str()), Aws::String(""));
 		if (!sent)
 		{
@@ -88,4 +85,4 @@ namespace Messaging
 
 		return {};
 	}
-} // namespace Messaging
+}

@@ -47,9 +47,6 @@ namespace
 		TemporaryDirectory()
 		{
 			static int sequence = 0;
-			// 병렬 ctest 는 TEST 하나당 별도 프로세스로 돌고 sequence 가 프로세스마다 1 부터 다시
-			// 시작한다. 프로세스 고유 토큰이 없으면 동시에 도는 두 케이스가 같은 경로를 공유하고,
-			// 먼저 끝난 쪽의 소멸자가 아직 쓰고 있는 파일을 지운다.
 			static const auto token = std::to_string(std::random_device{}());
 			path_ = std::filesystem::temp_directory_path() / ("yirang-process-test-" + token + "-" + std::to_string(++sequence));
 
@@ -96,7 +93,6 @@ namespace
 	};
 }
 
-// FR-PRC-01 — 기동 후 살아 있고, 정지 요청으로 종료된다
 TEST(ProcessSupervisorTest, StartsAndStopsProcess)
 {
 	PosixProcessSupervisor supervisor;
@@ -116,7 +112,6 @@ TEST(ProcessSupervisorTest, StartsAndStopsProcess)
 	EXPECT_NE(final_status.value().state, ProcessState::Running);
 }
 
-// FR-PRC-02 — 정상 종료의 exit code 를 보고한다
 TEST(ProcessSupervisorTest, ReportsExitCode)
 {
 	PosixProcessSupervisor supervisor;
@@ -131,7 +126,6 @@ TEST(ProcessSupervisorTest, ReportsExitCode)
 	EXPECT_EQ(status.exit_code.value(), 7);
 }
 
-// FR-PRC-01 — 실행 파일이 없으면 기동 자체가 실패로 보고된다 (exec 실패를 부모가 알아야 한다)
 TEST(ProcessSupervisorTest, MissingExecutableFailsToStart)
 {
 	PosixProcessSupervisor supervisor;
@@ -142,14 +136,11 @@ TEST(ProcessSupervisorTest, MissingExecutableFailsToStart)
 	EXPECT_NE(handle.error().find("yirang-should-not-exist"), std::string::npos);
 }
 
-// FR-PRC-01 — graceful 종료를 무시하면 타임아웃 후 강제 종료로 폴백한다
 TEST(ProcessSupervisorTest, ForcesTerminationWhenGracefulIsIgnored)
 {
 	PosixProcessSupervisor supervisor;
 	const TemporaryDirectory directory;
 
-	// trap 설치 전에 SIGTERM 이 도착하면 기본 처리로 죽어 버린다. 준비 완료를 파일로 알리게 해
-	// "graceful 을 무시하는 프로세스"라는 조건을 확정한 뒤에 정지를 요청한다.
 	const auto handle = supervisor.start({ kShell, { "-c", "trap '' TERM; : > ready; while :; do sleep 0.2; done" }, directory.path().string(), {} });
 	ASSERT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
 	ASSERT_TRUE(directory.wait_for("ready", std::chrono::seconds(5)));
@@ -164,7 +155,6 @@ TEST(ProcessSupervisorTest, ForcesTerminationWhenGracefulIsIgnored)
 	EXPECT_EQ(status.value().signal.value(), SIGKILL);
 }
 
-// 릴리스 디렉터리에서 기동해야 하므로 작업 디렉터리 지정이 실제로 적용되어야 한다
 TEST(ProcessSupervisorTest, AppliesWorkingDirectory)
 {
 	PosixProcessSupervisor supervisor;
@@ -180,7 +170,6 @@ TEST(ProcessSupervisorTest, AppliesWorkingDirectory)
 	EXPECT_NE(recorded.find(directory.path().filename().string()), std::string::npos);
 }
 
-// 관리 프로세스에 릴리스 정보를 넘겨야 하므로 환경변수 주입이 적용되어야 한다
 TEST(ProcessSupervisorTest, AppliesEnvironmentOverrides)
 {
 	PosixProcessSupervisor supervisor;

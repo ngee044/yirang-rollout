@@ -33,6 +33,20 @@ namespace YirangAgent
 		, s3_bucket_("")
 		, s3_region_("us-east-1")
 		, s3_endpoint_("")
+		, service_executable_("")
+		, service_arguments_()
+		, service_working_directory_("")
+		, stop_timeout_seconds_(30)
+		, startup_timeout_seconds_(60)
+		, health_kind_("process")
+		, health_host_("127.0.0.1")
+		, health_port_(0)
+		, health_path_("/")
+		, health_expected_status_(200)
+		, health_timeout_ms_(2000)
+		, health_interval_ms_(1000)
+		, health_success_threshold_(1)
+		, health_failure_threshold_(3)
 	{
 		root_path_ = arguments.program_folder();
 
@@ -85,6 +99,34 @@ namespace YirangAgent
 
 	auto Configurations::s3_endpoint(void) const -> std::string { return s3_endpoint_; }
 
+	auto Configurations::service_executable(void) const -> std::string { return service_executable_; }
+
+	auto Configurations::service_arguments(void) const -> std::vector<std::string> { return service_arguments_; }
+
+	auto Configurations::service_working_directory(void) const -> std::string { return service_working_directory_; }
+
+	auto Configurations::stop_timeout_seconds(void) const -> int { return stop_timeout_seconds_; }
+
+	auto Configurations::startup_timeout_seconds(void) const -> int { return startup_timeout_seconds_; }
+
+	auto Configurations::health_kind(void) const -> std::string { return health_kind_; }
+
+	auto Configurations::health_host(void) const -> std::string { return health_host_; }
+
+	auto Configurations::health_port(void) const -> int { return health_port_; }
+
+	auto Configurations::health_path(void) const -> std::string { return health_path_; }
+
+	auto Configurations::health_expected_status(void) const -> int { return health_expected_status_; }
+
+	auto Configurations::health_timeout_ms(void) const -> int { return health_timeout_ms_; }
+
+	auto Configurations::health_interval_ms(void) const -> int { return health_interval_ms_; }
+
+	auto Configurations::health_success_threshold(void) const -> int { return health_success_threshold_; }
+
+	auto Configurations::health_failure_threshold(void) const -> int { return health_failure_threshold_; }
+
 	auto Configurations::validate_required(void) const -> std::expected<void, std::string>
 	{
 		if (queue_url_.empty())
@@ -97,8 +139,6 @@ namespace YirangAgent
 			return std::unexpected("s3_bucket is required");
 		}
 
-		// version_root 는 비어 있으면 기본값으로 채워지므로 검사 대상이 아니다.
-		// 다만 서비스 실행 경로와 같으면 clean_old_version 이 가동 중인 앱을 지운다.
 		if (!service_root_.empty() && version_root_ == service_root_)
 		{
 			return std::unexpected("version_root must not be the same as service_root");
@@ -143,7 +183,6 @@ namespace YirangAgent
 
 		auto message = parsed_value.as_object();
 
-		// JSON 키와 멤버 이름을 1:1로 유지하기 위한 헬퍼 (키 불일치 실수 방지)
 		auto read_string = [&message](const char* key, std::string& target) -> void
 		{
 			if (message.contains(key) && message.at(key).is_string())
@@ -179,6 +218,87 @@ namespace YirangAgent
 		read_string("s3_bucket", s3_bucket_);
 		read_string("s3_region", s3_region_);
 		read_string("s3_endpoint", s3_endpoint_);
+
+		auto read_nested = [&message](const char* section, auto&& reader) -> void
+		{
+			if (message.contains(section) && message.at(section).is_object())
+			{
+				reader(message.at(section).as_object());
+			}
+		};
+
+		read_nested("service",
+					[this](const boost::json::object& section) -> void
+					{
+						if (section.contains("executable") && section.at("executable").is_string())
+						{
+							service_executable_ = section.at("executable").as_string().c_str();
+						}
+						if (section.contains("working_directory") && section.at("working_directory").is_string())
+						{
+							service_working_directory_ = section.at("working_directory").as_string().c_str();
+						}
+						if (section.contains("stop_timeout_seconds") && section.at("stop_timeout_seconds").is_int64())
+						{
+							stop_timeout_seconds_ = (int)section.at("stop_timeout_seconds").as_int64();
+						}
+						if (section.contains("startup_timeout_seconds") && section.at("startup_timeout_seconds").is_int64())
+						{
+							startup_timeout_seconds_ = (int)section.at("startup_timeout_seconds").as_int64();
+						}
+						if (section.contains("arguments") && section.at("arguments").is_array())
+						{
+							service_arguments_.clear();
+							for (const auto& element : section.at("arguments").as_array())
+							{
+								if (element.is_string())
+								{
+									service_arguments_.push_back(element.as_string().c_str());
+								}
+							}
+						}
+					});
+
+		read_nested("health",
+					[this](const boost::json::object& section) -> void
+					{
+						if (section.contains("kind") && section.at("kind").is_string())
+						{
+							health_kind_ = section.at("kind").as_string().c_str();
+						}
+						if (section.contains("host") && section.at("host").is_string())
+						{
+							health_host_ = section.at("host").as_string().c_str();
+						}
+						if (section.contains("path") && section.at("path").is_string())
+						{
+							health_path_ = section.at("path").as_string().c_str();
+						}
+						if (section.contains("port") && section.at("port").is_int64())
+						{
+							health_port_ = (int)section.at("port").as_int64();
+						}
+						if (section.contains("expected_status") && section.at("expected_status").is_int64())
+						{
+							health_expected_status_ = (int)section.at("expected_status").as_int64();
+						}
+						if (section.contains("timeout_ms") && section.at("timeout_ms").is_int64())
+						{
+							health_timeout_ms_ = (int)section.at("timeout_ms").as_int64();
+						}
+						if (section.contains("interval_ms") && section.at("interval_ms").is_int64())
+						{
+							health_interval_ms_ = (int)section.at("interval_ms").as_int64();
+						}
+						if (section.contains("success_threshold") && section.at("success_threshold").is_int64())
+						{
+							health_success_threshold_ = (int)section.at("success_threshold").as_int64();
+						}
+						if (section.contains("failure_threshold") && section.at("failure_threshold").is_int64())
+						{
+							health_failure_threshold_ = (int)section.at("failure_threshold").as_int64();
+						}
+					});
 	}
 
 	auto Configurations::parse(const ArgumentParser& arguments) -> void
@@ -246,7 +366,6 @@ namespace YirangAgent
 
 	auto Configurations::validate_configuration(void) -> void
 	{
-		// Logger는 log_root 뒤에 구분자를 붙이지 않고 파일명을 이어 붙이므로 후행 구분자를 보장한다.
 		if (log_root_path_.empty())
 		{
 			log_root_path_ = root_path_;
@@ -256,7 +375,6 @@ namespace YirangAgent
 			log_root_path_ += '/';
 		}
 
-		// main_title은 로그 파일명 구성요소이므로 경로 구분자를 허용하지 않는다.
 		std::replace(main_title_.begin(), main_title_.end(), '/', '_');
 		std::replace(main_title_.begin(), main_title_.end(), '\\', '_');
 
@@ -275,10 +393,44 @@ namespace YirangAgent
 			write_interval_ = 1000;
 		}
 
-		// SQS long polling 은 최대 20초다. 범위를 넘기면 요청 자체가 거부된다.
 		if (poll_wait_seconds_ < 0 || poll_wait_seconds_ > 20)
 		{
 			poll_wait_seconds_ = 20;
+		}
+
+		if (stop_timeout_seconds_ < 1)
+		{
+			stop_timeout_seconds_ = 30;
+		}
+
+		if (startup_timeout_seconds_ < 1)
+		{
+			startup_timeout_seconds_ = 60;
+		}
+
+		if (health_interval_ms_ < 1)
+		{
+			health_interval_ms_ = 1000;
+		}
+
+		if (health_timeout_ms_ < 1)
+		{
+			health_timeout_ms_ = 2000;
+		}
+
+		if (health_success_threshold_ < 1)
+		{
+			health_success_threshold_ = 1;
+		}
+
+		if (health_failure_threshold_ < 1)
+		{
+			health_failure_threshold_ = 3;
+		}
+
+		if (health_kind_ != "process" && health_kind_ != "tcp" && health_kind_ != "http")
+		{
+			health_kind_ = "process";
 		}
 
 		if (version_root_.empty())
@@ -296,4 +448,4 @@ namespace YirangAgent
 			s3_region_ = "us-east-1";
 		}
 	}
-} // namespace YirangAgent
+}

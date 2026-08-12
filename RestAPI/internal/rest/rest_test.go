@@ -74,7 +74,6 @@ func decodeEnvelope(t *testing.T, recorder *httptest.ResponseRecorder) envelope 
 	return decoded
 }
 
-// A queued command is accepted, not completed: the device acts on it later.
 func TestDeployAnswers202(t *testing.T) {
 	svc := &stubService{result: &service.PublishResult{Command: models.CommandDownloadVersion, Targeted: 2, Published: 2}}
 
@@ -92,7 +91,6 @@ func TestDeployAnswers202(t *testing.T) {
 	}
 }
 
-// A misspelled field would otherwise be dropped and deploy the wrong thing.
 func TestDeployRejectsUnknownField(t *testing.T) {
 	recorder := call(t, newTestHandler(&stubService{}), http.MethodPost, "/api/v1/deployments",
 		`{"release_id":"rel_1","artifact":[]}`)
@@ -125,7 +123,6 @@ func TestDeployRejectsMalformedAndEmptyBodies(t *testing.T) {
 	}
 }
 
-// An oversized body must be refused before it is buffered.
 func TestDeployRejectsOversizedBody(t *testing.T) {
 	body := `{"release_id":"` + strings.Repeat("a", maxRequestBytes+1) + `"}`
 
@@ -136,7 +133,6 @@ func TestDeployRejectsOversizedBody(t *testing.T) {
 	}
 }
 
-// The status and code the service chose must survive the transport unchanged.
 func TestServiceErrorKeepsItsStatusAndCode(t *testing.T) {
 	tests := []struct {
 		err    error
@@ -169,7 +165,6 @@ func TestServiceErrorKeepsItsStatusAndCode(t *testing.T) {
 	}
 }
 
-// The wrapped cause is for the log, not for the client.
 func TestInternalErrorDoesNotLeakItsCause(t *testing.T) {
 	svc := &stubService{err: apierr.Internal(io.EOF, "cannot reach sqs at https://internal.host/queue")}
 
@@ -226,7 +221,6 @@ func TestHealthEndpoints(t *testing.T) {
 	}
 }
 
-// ServeMux answers 405 on its own once a method-qualified route exists.
 func TestWrongMethodIsRejected(t *testing.T) {
 	recorder := call(t, newTestHandler(&stubService{}), http.MethodDelete, "/api/v1/deployments", "")
 
@@ -246,7 +240,6 @@ func TestUnknownPathIsJSON(t *testing.T) {
 	}
 }
 
-// One bad request must not take the process down with it.
 func TestPanicBecomesA500(t *testing.T) {
 	recorder := call(t, newTestHandler(&stubService{panics: true}), http.MethodPost, "/api/v1/deployments", `{"release_id":"a"}`)
 
@@ -258,9 +251,6 @@ func TestPanicBecomesA500(t *testing.T) {
 	}
 }
 
-// The API is unauthenticated on loopback, so a browser must not be able to
-// reach a write endpoint. Requiring JSON forces a CORS preflight, and a form
-// POST (text/plain, urlencoded, multipart) never gets one.
 func TestWriteEndpointsRejectBrowserFormPosts(t *testing.T) {
 	handler := newTestHandler(&stubService{})
 
@@ -289,7 +279,6 @@ func TestWriteEndpointsRejectBrowserFormPosts(t *testing.T) {
 	}
 }
 
-// A charset parameter is normal and must not be treated as a different type.
 func TestJSONContentTypeAcceptsParameters(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/commands", strings.NewReader(`{"command":"current_status"}`))
 	request.Header.Set("Content-Type", "application/json; charset=utf-8")
@@ -302,7 +291,6 @@ func TestJSONContentTypeAcceptsParameters(t *testing.T) {
 	}
 }
 
-// mux 의 경로 정규화 리다이렉트를 봉투로 바꾸면 Location 없는 307 이 나간다.
 func TestPathNormalizationRedirectKeepsItsLocation(t *testing.T) {
 	handler := newTestHandler(&stubService{})
 

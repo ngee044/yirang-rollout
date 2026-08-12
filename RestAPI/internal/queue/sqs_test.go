@@ -65,8 +65,6 @@ func TestSendPropagatesFailure(t *testing.T) {
 	}
 }
 
-// Receive must not delete: a delete that failed halfway would drop everything
-// already read.
 func TestReceiveDoesNotAcknowledge(t *testing.T) {
 	fake := &fakeAPI{received: []types.Message{
 		{MessageId: aws.String("1"), Body: aws.String("a"), ReceiptHandle: aws.String("h1")},
@@ -92,7 +90,6 @@ func TestReceiveDoesNotAcknowledge(t *testing.T) {
 	}
 }
 
-// One batch call, not one call per message.
 func TestDeleteBatchesEveryHandle(t *testing.T) {
 	fake := &fakeAPI{}
 	messages := []Message{{ReceiptHandle: "h1"}, {ReceiptHandle: "h2"}, {ReceiptHandle: "h3"}}
@@ -125,7 +122,6 @@ func TestDeleteIsANoOpWhenThereIsNothingToAcknowledge(t *testing.T) {
 	}
 }
 
-// A partial batch failure is reported, never silently dropped.
 func TestDeleteReportsPartialFailure(t *testing.T) {
 	fake := &fakeAPI{deleteFails: []types.BatchResultErrorEntry{
 		{Id: aws.String("1"), Message: aws.String("ReceiptHandleIsInvalid")},

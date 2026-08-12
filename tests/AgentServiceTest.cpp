@@ -3,6 +3,7 @@
 #include "AgentMessage.h"
 #include "AgentService.h"
 #include "IArtifactStore.h"
+#include "PosixProcessSupervisor.h"
 #include "IMessagePublisher.h"
 
 #include <algorithm>
@@ -21,9 +22,6 @@ namespace
 		TemporaryTree(void)
 		{
 			static int sequence = 0;
-			// 병렬 ctest 는 TEST 하나당 별도 프로세스로 돌고 sequence 가 프로세스마다 1 부터 다시
-			// 시작한다. 프로세스 고유 토큰이 없으면 동시에 도는 두 케이스가 같은 경로를 공유하고,
-			// 먼저 끝난 쪽의 소멸자가 아직 쓰고 있는 파일을 지운다.
 			static const auto token = std::to_string(std::random_device{}());
 			root_ = std::filesystem::temp_directory_path() / ("yirang-agent-test-" + token + "-" + std::to_string(++sequence));
 
@@ -68,7 +66,6 @@ namespace
 		return AgentService(options, nullptr);
 	}
 
-	// 결과 보고를 네트워크 없이 검증하기 위한 대역.
 	class RecordingPublisher : public Messaging::IMessagePublisher
 	{
 	public:
@@ -91,7 +88,6 @@ namespace
 		int count_{ 0 };
 	};
 
-	// 다운로드를 항상 실패시켜 실패 경로(잔여물 정리)를 검사한다.
 	class FailingStore : public Artifact::IArtifactStore
 	{
 	public:
@@ -110,7 +106,6 @@ namespace
 	}
 }
 
-// 지원 명령 5종이 전부 등록되어야 한다 (등록 누락은 조용한 무시로 이어진다)
 TEST(AgentServiceTest, RegistersEverySupportedCommand)
 {
 	TemporaryTree tree;
@@ -125,9 +120,6 @@ TEST(AgentServiceTest, RegistersEverySupportedCommand)
 	}
 }
 
-// 미등록 명령을 조용히 무시하면 발행 측이 처리된 줄 안다
-// handle() 의 반환값은 "메시지를 소비했는가"다. 재배달해도 없는 핸들러가 생기지는 않으므로
-// 미등록 명령은 보고만 남기고 소비한다 — 되돌리면 가시성 타임아웃마다 영구 재배달된다.
 TEST(AgentServiceTest, UnknownCommandIsConsumedAndReportedAsFailure)
 {
 	TemporaryTree tree;
@@ -144,7 +136,6 @@ TEST(AgentServiceTest, UnknownCommandIsConsumedAndReportedAsFailure)
 	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
 }
 
-// 같은 본문을 다시 파싱해도 결과가 같다. 보고만 남기고 소비한다.
 TEST(AgentServiceTest, MalformedEnvelopeIsConsumedAndReported)
 {
 	TemporaryTree tree;
@@ -165,7 +156,6 @@ TEST(AgentServiceTest, MalformedEnvelopeIsConsumedAndReported)
 	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
 }
 
-// clean_old_version 은 받아둔 버전 폴더를 전부 지운다
 TEST(AgentServiceTest, CleanOldVersionRemovesEveryDownloadedVersion)
 {
 	TemporaryTree tree;
@@ -183,7 +173,6 @@ TEST(AgentServiceTest, CleanOldVersionRemovesEveryDownloadedVersion)
 	EXPECT_TRUE(std::filesystem::exists(tree.version_root()));
 }
 
-// 서비스 실행 경로를 지우면 가동 중인 앱이 사라진다
 TEST(AgentServiceTest, CleanOldVersionRefusesWhenRootsAreIdentical)
 {
 	TemporaryTree tree;
@@ -202,7 +191,6 @@ TEST(AgentServiceTest, CleanOldVersionRefusesWhenRootsAreIdentical)
 	EXPECT_TRUE(std::filesystem::exists(tree.version_root() + "/rel_1"));
 }
 
-// current_status 는 디스크 여유와 받아둔 버전 목록을 보고한다
 TEST(AgentServiceTest, CurrentStatusReportsDiskAndVersions)
 {
 	TemporaryTree tree;
@@ -219,10 +207,7 @@ TEST(AgentServiceTest, CurrentStatusReportsDiskAndVersions)
 	EXPECT_NE(report.find("rel_1"), std::string::npos);
 }
 
-// 요구대로 old version 폴더에 파일이 없으면 실패를 되돌린다
-// apply_version·rollback_version 은 릴리스 설치기(R-008) 부재로 구조적으로 항상 실패한다.
-// 실패를 큐로 되돌리면 영구 재배달만 남으므로 보고 후 소비한다. R-008 구현 시 이 기대는 바뀐다.
-TEST(AgentServiceTest, ApplyAndRollbackAreConsumedWhileInstallerIsMissing)
+TEST(AgentServiceTest, ApplyAndRollbackAreConsumedWhenTheEngineIsNotConfigured)
 {
 	TemporaryTree tree;
 	auto publisher = std::make_shared<RecordingPublisher>();
@@ -234,14 +219,40 @@ TEST(AgentServiceTest, ApplyAndRollbackAreConsumedWhileInstallerIsMissing)
 	AgentService service(options, nullptr, publisher);
 
 	EXPECT_TRUE(service.handle(envelope(Commands::kRollbackVersion, R"({"release_id":"rel_absent"})")).has_value());
-	EXPECT_NE(publisher->body().find("rel_absent"), std::string::npos);
+	EXPECT_NE(publisher->body().find("deployment engine is not configured"), std::string::npos) << publisher->body();
 
 	EXPECT_TRUE(service.handle(envelope(Commands::kApplyVersion, R"({"release_id":"rel_absent"})")).has_value());
-	EXPECT_NE(publisher->body().find("not downloaded"), std::string::npos);
+	EXPECT_NE(publisher->body().find("deployment engine is not configured"), std::string::npos) << publisher->body();
 	EXPECT_EQ(publisher->count(), 2);
+	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
 }
 
-// 빈 목록을 성공으로 처리하면 빈 버전 디렉터리가 정상 릴리스로 보고된다.
+TEST(AgentServiceTest, ApplyRejectsAVersionThatWasNotDownloaded)
+{
+	TemporaryTree tree;
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	Install::InstallOptions install_options;
+	install_options.service_root = tree.service_root();
+
+	Deploy::ServiceSpec spec;
+	spec.executable = "app.exe";
+
+	auto engine = std::make_shared<Deploy::DeploymentEngine>(std::make_shared<Install::ReleaseInstaller>(install_options),
+															 std::make_shared<Process::PosixProcessSupervisor>(), spec, Health::HealthCheckSpec{});
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.service_root = tree.service_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher, engine);
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kApplyVersion, R"({"release_id":"rel_absent"})")).has_value());
+	EXPECT_NE(publisher->body().find("not downloaded"), std::string::npos) << publisher->body();
+	EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(tree.service_root()) / "state.json"));
+}
+
 TEST(AgentServiceTest, DownloadVersionRejectsEmptyArtifacts)
 {
 	TemporaryTree tree;
@@ -258,8 +269,6 @@ TEST(AgentServiceTest, DownloadVersionRejectsEmptyArtifacts)
 	EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(tree.version_root()) / "rel_1"));
 }
 
-// 다운로드가 중도 실패하면 버전 디렉터리가 남지 않아야 한다. 남으면 손상 릴리스가
-// current_status 에 정상 버전으로 잡히고 apply_version 의 존재 검사도 통과한다.
 TEST(AgentServiceTest, FailedDownloadLeavesNoVersionDirectory)
 {
 	TemporaryTree tree;
@@ -275,7 +284,6 @@ TEST(AgentServiceTest, FailedDownloadLeavesNoVersionDirectory)
 	EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(tree.version_root()) / "rel_2"));
 }
 
-// 봉투가 결과 큐를 지정하면 설정의 기본 큐보다 우선한다 (AgentMessage.h 의 계약).
 TEST(AgentServiceTest, ReplyQueueUrlOverridesConfiguredResultQueue)
 {
 	TemporaryTree tree;
@@ -322,7 +330,6 @@ TEST(AgentMessageTest, SerializeParseRoundTrip)
 	EXPECT_NE(restored.value().payload.find("rel_1"), std::string::npos);
 }
 
-// payload 가 없으면 빈 객체로 채워 핸들러가 항상 같은 형태를 본다
 TEST(AgentMessageTest, MissingPayloadBecomesEmptyObject)
 {
 	const auto parsed = parse_agent_message(R"({"command":"current_status"})");
@@ -331,7 +338,6 @@ TEST(AgentMessageTest, MissingPayloadBecomesEmptyObject)
 	EXPECT_EQ(parsed.value().payload, "{}");
 }
 
-// 처리 결과가 결과 큐로 보고되어야 한다
 TEST(AgentServiceTest, ReportsOutcomeToResultQueue)
 {
 	TemporaryTree tree;
@@ -355,8 +361,6 @@ TEST(AgentServiceTest, ReportsOutcomeToResultQueue)
 	EXPECT_NE(publisher->body().find("pc-001"), std::string::npos);
 }
 
-// 실패도 보고되어야 한다 — 발행 측이 결과를 알아야 다음 판단을 한다
-// 결과 큐가 없으면 보고하지 않는다 (발행자 없이도 동작해야 한다)
 TEST(AgentServiceTest, SkipsReportWhenResultQueueIsNotConfigured)
 {
 	TemporaryTree tree;

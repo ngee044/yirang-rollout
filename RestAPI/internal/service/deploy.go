@@ -1,6 +1,3 @@
-// Package service turns a REST request into messages on device queues. It owns
-// every rule about what is worth publishing; the transport layer above it only
-// decodes, and the queue layer below it only sends.
 package service
 
 import (
@@ -16,12 +13,8 @@ import (
 	"github.com/hyunkyu/yirang-rollout/RestAPI/internal/queue"
 )
 
-// maxConcurrentSends bounds the fan-out. A fleet of a few hundred devices would
-// otherwise open a few hundred simultaneous SQS connections from one request.
 const maxConcurrentSends = 8
 
-// Publisher and Receiver are declared here, at the point of use, so this package
-// depends on what it needs rather than on a concrete queue implementation.
 type Publisher interface {
 	Send(ctx context.Context, queueURL, body string) (string, error)
 }
@@ -31,21 +24,18 @@ type Receiver interface {
 	Delete(ctx context.Context, queueURL string, messages []queue.Message) error
 }
 
-// DeployRequest asks for a release to be downloaded by a group of devices.
 type DeployRequest struct {
 	ReleaseID string            `json:"release_id"`
 	Group     string            `json:"group"`
 	Artifacts []models.Artifact `json:"artifacts"`
 }
 
-// CommandRequest publishes any supported command with a caller-supplied payload.
 type CommandRequest struct {
 	Command string          `json:"command"`
 	Group   string          `json:"group"`
 	Payload json.RawMessage `json:"payload"`
 }
 
-// Delivery records one publish attempt so a partial fan-out stays visible.
 type Delivery struct {
 	Queue     string `json:"queue"`
 	QueueURL  string `json:"queue_url"`
@@ -53,7 +43,6 @@ type Delivery struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// PublishResult is what the caller gets back: who was targeted, who accepted.
 type PublishResult struct {
 	Command    string     `json:"command"`
 	Targeted   int        `json:"targeted"`
@@ -61,17 +50,13 @@ type PublishResult struct {
 	Deliveries []Delivery `json:"deliveries"`
 }
 
-// ResultBatch is one drain of the result queue.
 type ResultBatch struct {
 	Count   int             `json:"count"`
 	Reports []models.Report `json:"reports"`
 
-	// Skipped counts bodies that were not agent reports. Non-zero means
-	// something else is writing to the result queue.
 	Skipped int `json:"skipped,omitempty"`
 }
 
-// Service publishes commands and collects reports.
 type Service struct {
 	cfg       *config.Config
 	publisher Publisher
@@ -83,7 +68,6 @@ func New(cfg *config.Config, publisher Publisher, receiver Receiver, logger *slo
 	return &Service{cfg: cfg, publisher: publisher, receiver: receiver, logger: logger}
 }
 
-// Deploy validates a release and publishes download_version to the group.
 func (s *Service) Deploy(ctx context.Context, request DeployRequest) (*PublishResult, error) {
 	payload, err := downloadPayload(request.ReleaseID, request.Artifacts)
 	if err != nil {
@@ -93,9 +77,6 @@ func (s *Service) Deploy(ctx context.Context, request DeployRequest) (*PublishRe
 	return s.publish(ctx, models.CommandDownloadVersion, request.Group, payload)
 }
 
-// downloadPayload validates a release and returns the encoded download_version
-// payload. Both entry points go through it, so /commands cannot publish a
-// release that /deployments would have rejected.
 func downloadPayload(releaseID string, artifacts []models.Artifact) (json.RawMessage, error) {
 	if len(artifacts) == 0 {
 		return nil, apierr.BadRequest("artifacts must not be empty")
@@ -103,9 +84,6 @@ func downloadPayload(releaseID string, artifacts []models.Artifact) (json.RawMes
 
 	normalized := make([]models.Artifact, len(artifacts))
 	for index, artifact := range artifacts {
-		// Every rule here mirrors Artifact::make_object_key
-		// (Artifact/ArtifactKey.cpp). Rejecting at the edge turns one 400 into
-		// a fixable message instead of a failure report from every device.
 		if err := validateObjectKey(releaseID, artifact.InstallPath, index); err != nil {
 			return nil, err
 		}
@@ -115,8 +93,6 @@ func downloadPayload(releaseID string, artifacts []models.Artifact) (json.RawMes
 		}
 
 		normalized[index] = artifact
-		// The agent compares against a lowercase digest, so an uppercase hash
-		// would download correctly and then fail verification on the device.
 		normalized[index].SHA256 = strings.ToLower(artifact.SHA256)
 	}
 
@@ -128,8 +104,6 @@ func downloadPayload(releaseID string, artifacts []models.Artifact) (json.RawMes
 	return encoded, nil
 }
 
-// Command publishes a supported command with the caller's payload forwarded
-// verbatim.
 func (s *Service) Command(ctx context.Context, request CommandRequest) (*PublishResult, error) {
 	if !models.IsSupportedCommand(request.Command) {
 		return nil, apierr.Unsupported(request.Command)
@@ -144,9 +118,6 @@ func (s *Service) Command(ctx context.Context, request CommandRequest) (*Publish
 	}
 
 	switch request.Command {
-	// download_version carries the same payload as /deployments, so it gets the
-	// same validation. Skipping it here would make this endpoint a way around
-	// every object-key and digest rule.
 	case models.CommandDownloadVersion:
 		var download models.DownloadPayload
 		if err := json.Unmarshal(payload, &download); err != nil {
@@ -159,8 +130,6 @@ func (s *Service) Command(ctx context.Context, request CommandRequest) (*Publish
 		}
 		payload = validated
 
-	// apply_version and rollback_version read release_id out of the payload
-	// (YirangAgent/AgentService.cpp). Without it the device can only fail.
 	case models.CommandApplyVersion, models.CommandRollbackVersion:
 		var version models.VersionPayload
 		if err := json.Unmarshal(payload, &version); err != nil || version.ReleaseID == "" {
@@ -171,9 +140,6 @@ func (s *Service) Command(ctx context.Context, request CommandRequest) (*Publish
 	return s.publish(ctx, request.Command, request.Group, payload)
 }
 
-// publish fans one envelope out to every queue in the group. One failing queue
-// must not stop the rest, so failures are recorded per target instead of
-// aborting; the caller decides what a partial fan-out means.
 func (s *Service) publish(ctx context.Context, command, group string, payload json.RawMessage) (*PublishResult, error) {
 	targets := s.cfg.QueuesForGroup(group)
 	if len(targets) == 0 {
@@ -189,7 +155,6 @@ func (s *Service) publish(ctx context.Context, command, group string, payload js
 		return nil, apierr.Internal(err, "cannot encode agent message")
 	}
 
-	// Indexed writes keep the response in configuration order and need no lock.
 	deliveries := make([]Delivery, len(targets))
 	slots := make(chan struct{}, min(maxConcurrentSends, len(targets)))
 
@@ -223,8 +188,6 @@ func (s *Service) publish(ctx context.Context, command, group string, payload js
 		s.logger.Error("publish failed", "command", command, "queue", delivery.Queue, "error", delivery.Error)
 	}
 
-	// 부분 실패는 202 로 답한다 — 일부 디바이스는 받았다. 0건 수락은 다른 결과이므로
-	// 성공으로 답하면 진행 중인 배포가 있다고 오인시킨다.
 	if result.Published == 0 {
 		return nil, apierr.AllTargetsFailed(result.Targeted)
 	}
@@ -232,7 +195,6 @@ func (s *Service) publish(ctx context.Context, command, group string, payload js
 	return result, nil
 }
 
-// Results drains the result queue and acknowledges what it read.
 func (s *Service) Results(ctx context.Context) (*ResultBatch, error) {
 	if s.cfg.ResultQueueURL == "" {
 		return nil, apierr.NoResultQueue()
@@ -247,8 +209,6 @@ func (s *Service) Results(ctx context.Context) (*ResultBatch, error) {
 	for _, message := range messages {
 		var report models.Report
 		if decodeErr := json.Unmarshal([]byte(message.Body), &report); decodeErr != nil {
-			// Not an agent report. Still acknowledged below: leaving it would
-			// make it redeliver forever and crowd out real reports.
 			batch.Skipped++
 			s.logger.Warn("undecodable result message", "message_id", message.ID, "error", decodeErr)
 			continue
@@ -257,9 +217,6 @@ func (s *Service) Results(ctx context.Context) (*ResultBatch, error) {
 	}
 	batch.Count = len(batch.Reports)
 
-	// Delivery is at-least-once: a failed delete means the report comes back
-	// and the caller sees it twice. That is better than losing it, so the
-	// reports already decoded are returned regardless.
 	if deleteErr := s.receiver.Delete(ctx, s.cfg.ResultQueueURL, messages); deleteErr != nil {
 		s.logger.Error("cannot acknowledge result messages", "count", len(messages), "error", deleteErr)
 	}
@@ -267,7 +224,6 @@ func (s *Service) Results(ctx context.Context) (*ResultBatch, error) {
 	return batch, nil
 }
 
-// validateObjectKey mirrors Artifact::make_object_key in Artifact/ArtifactKey.cpp.
 func validateObjectKey(releaseID, installPath string, index int) error {
 	if releaseID == "" {
 		return apierr.BadRequest("release_id is required")
@@ -275,8 +231,6 @@ func validateObjectKey(releaseID, installPath string, index int) error {
 	if strings.ContainsAny(releaseID, `/\`) {
 		return apierr.BadRequest("release_id must not contain a path separator: %q", releaseID)
 	}
-	// "." and ".." carry no separator, so the check above lets them through. ".." would
-	// place files outside the agent's version root; "." breaks per-release isolation.
 	if releaseID == "." || releaseID == ".." {
 		return apierr.BadRequest("release_id must not be a path reference: %q", releaseID)
 	}

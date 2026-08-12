@@ -1,9 +1,7 @@
-# 소스는 명시적으로 나열한다. file(GLOB)은 사용하지 않는다.
 set(EXECUTABLE_NAME YirangAgent)
 
 project(${EXECUTABLE_NAME} VERSION 0.1.0 LANGUAGES CXX)
 
-# 진입점(main.cpp)을 제외한 전부를 정적 라이브러리로 두어 테스트가 같은 오브젝트를 링크한다.
 set(CORE_LIBRARY_NAME YirangAgentCore)
 
 set(CORE_HEADER_FILES
@@ -20,13 +18,11 @@ set(CORE_SOURCE_FILES
 
 add_library(${CORE_LIBRARY_NAME} STATIC ${CORE_SOURCE_FILES} ${CORE_HEADER_FILES})
 
-# flat include 규약: 소비 측은 #include "AgentService.h" 로 포함한다.
 target_include_directories(${CORE_LIBRARY_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 find_package(Boost REQUIRED COMPONENTS json)
 
-# Artifact: S3 다운로드. Release: SHA-256 검증. Utilities: Logger/ArgumentParser/File.
-target_link_libraries(${CORE_LIBRARY_NAME} PUBLIC Utilities Boost::json Artifact Release Messaging)
+target_link_libraries(${CORE_LIBRARY_NAME} PUBLIC Utilities Boost::json Artifact Release Messaging Deploy)
 
 set(SOURCE_FILES
     main.cpp
@@ -34,7 +30,6 @@ set(SOURCE_FILES
 
 add_executable(${EXECUTABLE_NAME} ${SOURCE_FILES})
 
-# 타겟명(YirangAgent)과 배포되는 실행 파일명(yirang-agent)은 다르다.
 set_target_properties(${EXECUTABLE_NAME} PROPERTIES OUTPUT_NAME yirang-agent)
 
 target_link_libraries(${EXECUTABLE_NAME} PRIVATE Threads::Threads ${CORE_LIBRARY_NAME})

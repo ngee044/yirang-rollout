@@ -110,12 +110,21 @@ REST API 서버에는 **인증이 없습니다.** 의도된 선택입니다.
 ## 설치 레이아웃
 
 ```text
-<version_root>/
-├── rel_20260808_1/     이전 릴리스 (keep_previous_releases 만큼 보관)
-└── rel_20260808_2/     신규 릴리스
+<version_root>/                     다운로드 캐시 — download_version 만 채웁니다
+├── rel_20260808_1/
+└── rel_20260808_2/
 
-<service_root>/         실제 서비스 경로 — apply_version 만 건드립니다
+<service_root>/                     실제 서비스 경로 — apply_version 만 건드립니다
+├── releases/
+│   ├── rel_20260808_1/             이전 릴리스 (롤백 대상)
+│   └── rel_20260808_2/             활성 릴리스
+├── state.json                      {active, previous, updated_at} ← 진실 원천
+└── current ─────────────────────▶  releases/rel_20260808_2 (편의용 심링크)
 ```
+
+**활성 릴리스의 진실 원천은 `state.json`입니다.** 두 값을 각각 파일로 두면 두 번 rename 하는 사이에 불일치 창이 생기므로 하나로 묶어 임시 파일 + rename 으로 한 번에 교체합니다. `current` 심링크는 사람이 탐색기에서 찾기 위한 편의물이며, Windows 에서 권한이 없어 만들지 못해도 배포는 그대로 동작합니다.
+
+설치는 **staging + rename**입니다. 캐시와 서비스 경로가 다른 드라이브일 수 있어 복사가 필요하고, 복사 중 실패한 디렉터리가 `releases/` 에 남지 않아야 하기 때문입니다.
 
 `version_root`와 `service_root`가 같으면 `clean_old_version`이 가동 중인 앱을 지우므로 설정 검증에서 거부합니다.
 
@@ -130,9 +139,17 @@ REST API 서버에는 **인증이 없습니다.** 의도된 선택입니다.
   "control_plane_url": "http://127.0.0.1:8080",
   "api_token": "",
   "request_timeout_seconds": 30,
-  "output_format": "table"
+  "output_format": "table",
+
+  "upload_file_list": ["C:/build/Release/app.exe", "C:/build/Release/config.json"],
+  "target_group": "kiosk",
+  "s3_bucket": "yirang-releases",
+  "s3_region": "ap-northeast-2",
+  "s3_endpoint": ""
 }
 ```
+
+`install_path`는 파일명으로 정해집니다. 서로 다른 디렉터리의 같은 파일명은 설치 시 서로를 덮어쓰므로 매니페스트 생성 단계에서 거부합니다.
 
 **REST API (환경변수)** — 대상 큐 목록을 소유합니다.
 
@@ -155,9 +172,47 @@ AWS_REGION=ap-northeast-2
   "service_root": "C:/Program Files/KioskApp",
   "keep_previous_releases": 2,
   "s3_bucket": "yirang-releases",
-  "s3_region": "ap-northeast-2"
+  "s3_region": "ap-northeast-2",
+
+  "service": {
+    "executable": "app.exe",
+    "arguments": [],
+    "stop_timeout_seconds": 30,
+    "startup_timeout_seconds": 60
+  },
+  "health": {
+    "kind": "http", "host": "127.0.0.1", "port": 8080, "path": "/healthz",
+    "success_threshold": 2, "failure_threshold": 3, "interval_ms": 1000
+  }
 }
 ```
+
+`service.executable`은 **릴리스 디렉터리 기준 상대 경로**입니다. 절대 경로를 허용하면 릴리스 밖을 실행할 수 있어 "검증 전 아티팩트를 실행하지 않는다"가 무너집니다.
+
+`health.kind`가 `process`면 프로세스 생존만 봅니다. `success_threshold × interval_ms`가 곧 "정상으로 인정하는 최소 생존 시간"이므로, 기동 후 잠깐 살다 죽는 릴리스를 걸러내려면 서비스 기동 시간보다 넉넉하게 잡으십시오.
+
+## CLI 사용법
+
+```bash
+yirang deploy                        # upload_file_list 를 S3 에 올리고 배포를 요청한다
+yirang command current_status         # Agent 명령을 발행한다
+yirang command apply_version rel_1    # release_id 는 두 번째 위치 인자
+yirang results                        # 디바이스가 보고한 결과를 조회한다
+```
+
+설정 파일 없이 인자만으로도 동작합니다.
+
+```bash
+yirang --control_plane_url http://127.0.0.1:8080 \
+       --s3_bucket yirang-releases --s3_region ap-northeast-2 \
+       --upload_file_list build/app.exe,build/config.json \
+       --target_group kiosk \
+       deploy
+```
+
+`deploy`는 **매니페스트를 먼저 만들고 그다음 업로드**합니다. 파일 존재·중복 파일명·SHA-256이 업로드 전에 확정되므로, 올라간 파일과 배포 요청에 실리는 해시가 같은 시점의 것임이 보장됩니다. 업로드가 하나라도 실패하면 배포 요청을 보내지 않습니다.
+
+`--output_format json`을 주면 서버 응답 원문을 그대로 출력합니다. `--help`·`--version`은 로그 레벨과 무관하게 표준 출력으로 나갑니다.
 
 ## 배포 명령
 
@@ -226,7 +281,7 @@ flowchart TD
 | `CMakeLists.txt` | 루트 빌드 정의 (플랫폼 분기, 모듈 등록) |
 | `build.sh` | macOS / Linux 빌드 |
 | `vcpkg.json` | 의존성 매니페스트 (builtin-baseline 고정) |
-| `tests/` | gtest (65건) |
+| `tests/` | gtest (108건) |
 | `scripts/` | 부가 스크립트 (build.bat) |
 | `custom-triplets/` | macOS SDK 전달용 vcpkg triplet |
 | `.cpptoolkit/` | CppToolkit 서브모듈 |
@@ -286,8 +341,8 @@ Windows multi-config 생성기에서는 `build\out\<Config>\`, `build\lib\<Confi
 ## 테스트
 
 ```bash
-cd build && ctest --output-on-failure      # C++ 65건
-cd RestAPI && go test -race ./...          # Go 84건
+cd build && ctest --output-on-failure      # C++ 108건
+cd RestAPI && go test -race ./...          # Go 95건
 ```
 
 Windows(multi-config 생성기)에서는 config를 명시합니다.
@@ -300,25 +355,25 @@ S3·SQS 통합 테스트 2건은 LocalStack 환경변수(`YIRANG_TEST_S3_ENDPOIN
 
 ## 진행 상황
 
-배포 경로 중 **큐를 오가는 중간 구간은 끝까지 돌고, 진입부(CLI 업로드·REST 요청)와 적용부(중단·교체·재시작·롤백)가 비어 있습니다.**
+배포 경로 **14단계가 전부 돕니다.** LocalStack 으로 v1 배포·적용 → v2 교체 → 수동 롤백 → 자동 롤백까지 실측했습니다.
 
 ```mermaid
 flowchart LR
-    subgraph front["❌ 미구현"]
-        A[CLI 업로드] --> B[REST 요청]
+    subgraph cli["yirang (CLI)"]
+        A[업로드] --> B[REST 요청]
     end
-    subgraph middle["✅ 동작"]
-        C[검증] --> D[fanout] --> E[소비] --> F[라우팅] --> G[다운로드·검증]
+    subgraph api["RestAPI (Go)"]
+        C[검증] --> D[fanout]
     end
-    subgraph back["❌ 미구현"]
-        I[중단] --> J[교체] --> K[재시작] --> L[롤백]
-    end
-    subgraph tail["✅ 동작"]
-        H[결과 보고]
+    subgraph agent["yirang-agent"]
+        E[소비] --> F[라우팅] --> G[다운로드·SHA-256]
+        G --> I[설치] --> J[포인터 교체] --> K[재시작] --> L[readiness]
+        L -->|실패| M[자동 롤백]
+        L --> H[결과 보고]
+        M --> H
     end
     B --> C
-    G --> I
-    L --> H
+    D --> E
 ```
 
 | 모듈 | 상태 |
@@ -326,15 +381,17 @@ flowchart LR
 | S3 저장소 (`Artifact/`) | ✅ 완료 |
 | SQS 소비·발행 (`Messaging/`) | ✅ 완료 |
 | 릴리스 매니페스트 (`Release/`) | ✅ 완료 |
-| Agent 데몬 (`YirangAgent/`) | ✅ 완료 — 명령 5종 중 3종 동작 |
+| Agent 데몬 (`YirangAgent/`) | ✅ 완료 — 명령 5종 전부 동작 |
 | REST API 서버 (`RestAPI/`) | ✅ 완료 (인증은 의도적 제외, 상태 영속화 미구현) |
-| 프로세스 제어 (`Process/`) | ⚠️ 모듈 완료(POSIX) — **Agent 실행 파일에 미링크되어 호출 경로에 없음** |
-| 헬스체크 (`Health/`) | ⚠️ 모듈 완료 — **동일하게 미링크** |
-| CLI (`DeployCLI/`) | 🚧 골격만 — 서브커맨드·S3 업로드·REST 호출 미구현 |
-| 릴리스 설치기 · 배포 실행기 | ❌ 미착수 — `apply_version`·`rollback_version`이 이 부재를 사유로 실패를 반환합니다 |
+| 프로세스 제어 (`Process/`) | ✅ 완료 (POSIX) — `Deploy/`를 통해 Agent 실행 경로에 연결됨 |
+| 헬스체크 (`Health/`) | ✅ 완료 — readiness 판정·자동 롤백에 사용 |
+| CLI (`DeployCLI/`) | ✅ 완료 — `deploy`·`command`·`results`. S3 업로드 + REST 호출 |
+| 릴리스 설치기 (`Install/`) | ✅ 완료 — 원자적 배치·활성 포인터 교체·되돌리기·정리 |
+| 배포 실행기 (`Deploy/`) | ✅ 완료 — 중단 → 교체 → 재시작 → readiness, 실패 시 자동 롤백 |
+| E2E 데모 환경 | ❌ 미착수 — 수동으로는 돌지만 자동 재현 수단이 없습니다 |
 | Windows 지원 | ❌ 미착수 — `Process/`의 Windows 구현이 없어 configure가 실패합니다 |
 
-**차단 요인은 릴리스 설치기 하나**입니다. CLI 서브커맨드·결과 집계·Windows 지원은 서로 독립이라 병렬로 진행할 수 있습니다.
+**차단 요인이 없습니다.** 남은 작업(E2E 자동화·멱등 키·결과 집계·Windows 지원)은 서로 독립이라 병렬로 진행할 수 있습니다.
 
 단계별 실측 판정(`file:line` 근거)과 세부 계획은 `docs/task_list.md` §1.2~1.5(로컬 전용)를 참조합니다.
 

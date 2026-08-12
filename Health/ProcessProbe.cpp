@@ -38,4 +38,4 @@ namespace Health
 
 		return std::unexpected(std::format("process {} state is unknown", handle_.id));
 	}
-} // namespace Health
+}

@@ -1,9 +1,18 @@
 {
 	"app_title": "yirang",
-	"control_plane_url": "",
+
+	"control_plane_url": "http://127.0.0.1:8080",
 	"api_token": "",
 	"request_timeout_seconds": 30,
 	"output_format": "table",
+
+	"upload_file_list": [],
+	"target_group": "",
+
+	"s3_bucket": "",
+	"s3_region": "us-east-1",
+	"s3_endpoint": "",
+
 	"log_root_path": "",
 	"write_console_log": 4,
 	"write_file_log": 4,

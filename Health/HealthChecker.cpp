@@ -5,7 +5,6 @@ namespace Health
 	HealthChecker::HealthChecker(const HealthCheckSpec& spec, std::shared_ptr<IHealthProbe> probe)
 		: spec_(spec), probe_(std::move(probe)), state_(HealthState::Unknown), consecutive_successes_(0), consecutive_failures_(0), last_error_(std::nullopt)
 	{
-		// 임계값이 0 이하이면 한 번의 결과로 상태가 뒤집혀 흔들림에 그대로 노출된다.
 		if (spec_.success_threshold <= 0)
 		{
 			spec_.success_threshold = 1;
@@ -77,4 +76,4 @@ namespace Health
 		consecutive_failures_ = 0;
 		last_error_ = std::nullopt;
 	}
-} // namespace Health
+}

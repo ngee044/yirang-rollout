@@ -1,17 +1,4 @@
 #!/bin/bash
-#
-# yirang-rollout build script (CMake + Ninja + vcpkg). macOS / Linux.
-# Windows 는 scripts/build.bat 을 사용한다.
-#
-# Usage:
-#   ./build.sh [--debug|--release] [--clean] [--target <name>] [-j N]
-#
-# Environment overrides:
-#   VCPKG_ROOT   vcpkg 체크아웃 경로 (default: $HOME/vcpkg)
-#   BUILD_TYPE   Release | Debug (default: Release)
-#   SDKROOT      macOS SDK 강제 지정 (libc++ 헤더 문제 발생 시)
-#   CXX          컴파일러
-#
 set -euo pipefail
 export LC_ALL=C
 
@@ -45,7 +32,6 @@ if [ ! -f "$TOOLCHAIN" ]; then
 	exit 1
 fi
 
-# 서브모듈이 초기화되지 않은 상태로는 빌드가 실패한다.
 if [ -f "$SCRIPT_DIR/.gitmodules" ] && git submodule status --recursive 2>/dev/null | grep -q '^-'; then
 	echo "[build.sh] 초기화되지 않은 서브모듈 발견 -> git submodule update --init --recursive"
 	git submodule update --init --recursive
@@ -57,12 +43,6 @@ if ! command -v ninja >/dev/null 2>&1; then
 	GENERATOR=""
 fi
 
-# --- macOS: 활성 컴파일러가 실제로 파싱할 수 있는 SDK 선택 -------------------
-# 최신 CommandLineTools SDK 의 libc++ 헤더가 설치된 clang 에 없는 빌트인
-# (__builtin_ctzg 등)을 사용하는 경우가 있다. 이 상태에서는 프로젝트 빌드는 물론
-# vcpkg 포트 소스 빌드(gtest, boost-context 등)까지 실패한다.
-# 기본 SDK 를 프로브해 실패하면 컴파일 가능한 SDK 를 찾아 사용하고, 포트 빌드에도
-# 같은 SDK 가 쓰이도록 SDKROOT 를 export 한다 (custom-triplets 가 이를 읽는다).
 if [ "$(uname -s)" = "Darwin" ] && [ -z "${SDKROOT:-}" ]; then
 	CXX_PROBE="${CXX:-c++}"
 	probe_sdk() {

@@ -23,7 +23,6 @@ using namespace Process;
 
 namespace
 {
-	// 임계값 로직을 네트워크 없이 검증하기 위한 대역. 미리 정한 결과를 순서대로 돌려준다.
 	class ScriptedProbe : public IHealthProbe
 	{
 	public:
@@ -46,7 +45,6 @@ namespace
 		size_t index_{ 0 };
 	};
 
-	// 루프백에 임시 포트를 열어 TCP·HTTP 프로브를 실제 소켓으로 검증한다.
 	class LocalServer
 	{
 	public:
@@ -135,7 +133,6 @@ namespace
 	}
 }
 
-// FR-HLT-02 — 성공 임계값에 도달하기 전에는 Healthy 로 확정하지 않는다
 TEST(HealthCheckerTest, HealthyOnlyAfterSuccessThreshold)
 {
 	HealthCheckSpec spec;
@@ -150,7 +147,6 @@ TEST(HealthCheckerTest, HealthyOnlyAfterSuccessThreshold)
 	EXPECT_EQ(checker.consecutive_successes(), 3);
 }
 
-// FR-HLT-02 — 실패 임계값에 도달해야 Unhealthy 로 확정한다 (일시적 흔들림에 롤백이 걸리지 않게)
 TEST(HealthCheckerTest, UnhealthyOnlyAfterFailureThreshold)
 {
 	HealthCheckSpec spec;
@@ -166,7 +162,6 @@ TEST(HealthCheckerTest, UnhealthyOnlyAfterFailureThreshold)
 	EXPECT_EQ(checker.last_error().value(), "scripted failure");
 }
 
-// 연속 카운트는 반대 결과가 나오면 초기화되어야 한다
 TEST(HealthCheckerTest, StreaksResetOnOppositeResult)
 {
 	HealthCheckSpec spec;
@@ -189,7 +184,6 @@ TEST(HealthCheckerTest, StreaksResetOnOppositeResult)
 	EXPECT_EQ(checker.state(), HealthState::Unknown);
 }
 
-// 임계값 0 이하는 한 번의 결과로 상태가 뒤집히므로 최소 1로 보정한다
 TEST(HealthCheckerTest, NonPositiveThresholdsAreClampedToOne)
 {
 	HealthCheckSpec spec;
@@ -219,7 +213,6 @@ TEST(HealthCheckerTest, ResetClearsAccumulatedState)
 	EXPECT_FALSE(checker.last_error().has_value());
 }
 
-// FR-HLT-01 — 프로세스 생존 체크
 TEST(HealthCheckerTest, ProcessProbeFollowsProcessLifetime)
 {
 	auto supervisor = std::make_shared<PosixProcessSupervisor>();
@@ -236,7 +229,6 @@ TEST(HealthCheckerTest, ProcessProbeFollowsProcessLifetime)
 	EXPECT_FALSE(after_stop.has_value());
 }
 
-// FR-HLT-01 — TCP 연결 체크
 TEST(HealthCheckerTest, TcpProbeDetectsOpenAndClosedPort)
 {
 	HealthCheckSpec spec;
@@ -249,14 +241,12 @@ TEST(HealthCheckerTest, TcpProbeDetectsOpenAndClosedPort)
 	NetworkProbe open_probe(spec);
 	EXPECT_TRUE(open_probe.probe().has_value());
 
-	// 같은 포트를 닫아 두면 연결이 거부되어야 한다.
 	server.close();
 
 	NetworkProbe closed_probe(spec);
 	EXPECT_FALSE(closed_probe.probe().has_value());
 }
 
-// FR-HLT-01 — HTTP 상태 코드 체크
 TEST(HealthCheckerTest, HttpProbeChecksStatusCode)
 {
 	LocalServer server(http_response(200, "OK", "ready"));
@@ -278,7 +268,6 @@ TEST(HealthCheckerTest, HttpProbeChecksStatusCode)
 	EXPECT_NE(result.error().find("unexpected status"), std::string::npos);
 }
 
-// §22.1 — 선택적 응답 본문 패턴 검증
 TEST(HealthCheckerTest, HttpProbeChecksBodyPattern)
 {
 	LocalServer server(http_response(200, "OK", "status: ready"));
@@ -297,7 +286,6 @@ TEST(HealthCheckerTest, HttpProbeChecksBodyPattern)
 	EXPECT_FALSE(mismatched.probe().has_value());
 }
 
-// 포트가 없으면 네트워크 체크는 시도조차 하지 않는다
 TEST(HealthCheckerTest, NetworkProbeRequiresPort)
 {
 	HealthCheckSpec spec;

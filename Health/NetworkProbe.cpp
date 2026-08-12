@@ -10,7 +10,6 @@ namespace Health
 {
 	namespace
 	{
-		// libcurl 은 프로세스당 한 번만 전역 초기화해야 한다.
 		auto ensure_global_initialised(void) -> void
 		{
 			static std::once_flag once;
@@ -69,13 +68,9 @@ namespace Health
 		const std::string url = std::format("http://{}:{}", spec_.host, spec_.port);
 
 		curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
-		// 요청을 보내지 않고 연결 성립만 확인한다.
 		curl_easy_setopt(handle, CURLOPT_CONNECT_ONLY, 1L);
 		curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(spec_.timeout.count()));
 		curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
-		// http_proxy·all_proxy 가 설정된 장비에서 libcurl 이 요청을 프록시로 돌린다. 그러면 대상이
-		// 죽어 있어도 프록시 연결이 성립해 Healthy 로 판정되고 자동 롤백이 발동하지 않는다.
-		// 프로브 대상은 항상 로컬 프로세스이므로 프록시를 명시적으로 끈다.
 		curl_easy_setopt(handle, CURLOPT_PROXY, "");
 
 		const CURLcode code = curl_easy_perform(handle);
@@ -104,9 +99,6 @@ namespace Health
 		curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, static_cast<long>(spec_.timeout.count()));
 		curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(spec_.timeout.count()));
 		curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
-		// http_proxy·all_proxy 가 설정된 장비에서 libcurl 이 요청을 프록시로 돌린다. 그러면 대상이
-		// 죽어 있어도 프록시 연결이 성립해 Healthy 로 판정되고 자동 롤백이 발동하지 않는다.
-		// 프로브 대상은 항상 로컬 프로세스이므로 프록시를 명시적으로 끈다.
 		curl_easy_setopt(handle, CURLOPT_PROXY, "");
 		curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, append_body);
 		curl_easy_setopt(handle, CURLOPT_WRITEDATA, &body);
@@ -136,4 +128,4 @@ namespace Health
 
 		return {};
 	}
-} // namespace Health
+}
