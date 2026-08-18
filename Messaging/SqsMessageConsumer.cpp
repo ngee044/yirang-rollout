@@ -35,7 +35,10 @@ namespace Messaging
 			if (!options.endpoint.empty())
 			{
 				configuration.endpointOverride = options.endpoint.c_str();
-				configuration.scheme = Aws::Http::Scheme::HTTP;
+			}
+
+			if (options.allow_insecure_tls)
+			{
 				configuration.verifySSL = false;
 			}
 

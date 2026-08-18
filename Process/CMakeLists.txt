@@ -3,6 +3,7 @@ set(LIBRARY_NAME Process)
 set(HEADER_FILES
     ProcessTypes.h
     IProcessSupervisor.h
+    ProcessIdentity.h
 )
 
 set(SOURCE_FILES "")
@@ -13,7 +14,7 @@ if (WIN32)
         "CreateProcessW·Job Objects 기반 구현은 T-005 후속 작업입니다 (아키텍처 §17.2).")
 else()
     list(APPEND HEADER_FILES PosixProcessSupervisor.h)
-    list(APPEND SOURCE_FILES PosixProcessSupervisor.cpp)
+    list(APPEND SOURCE_FILES PosixProcessSupervisor.cpp PosixProcessIdentity.cpp)
 endif()
 
 add_library(${LIBRARY_NAME} STATIC ${SOURCE_FILES} ${HEADER_FILES})

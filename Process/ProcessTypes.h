@@ -11,6 +11,8 @@ namespace Process
 	struct ProcessHandle
 	{
 		int64_t id{ 0 };
+
+		uint64_t start_token{ 0 };
 	};
 
 	enum class ProcessState : uint8_t

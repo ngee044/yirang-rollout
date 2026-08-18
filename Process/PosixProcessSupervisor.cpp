@@ -1,5 +1,7 @@
 #include "PosixProcessSupervisor.h"
 
+#include "ProcessIdentity.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <csignal>
@@ -185,7 +187,56 @@ namespace Process
 			return std::unexpected(std::format("cannot start '{}': {}", options.executable_path, std::strerror(child_errno)));
 		}
 
-		return ProcessHandle{ static_cast<int64_t>(child) };
+		ProcessHandle handle{ static_cast<int64_t>(child) };
+
+		auto token = start_token(handle.id);
+		if (token)
+		{
+			handle.start_token = token.value();
+		}
+
+		{
+			std::scoped_lock<std::mutex> guard(mutex_);
+			finished_.erase(handle.id);
+			adopted_.erase(handle.id);
+		}
+
+		return handle;
+	}
+
+	auto PosixProcessSupervisor::adopt(const ProcessHandle& handle) -> std::expected<ProcessHandle, std::string>
+	{
+		if (handle.id <= 1)
+		{
+			return std::unexpected("invalid process handle");
+		}
+
+		if (handle.start_token == 0)
+		{
+			return std::unexpected(std::format("process {} has no start token to verify", handle.id));
+		}
+
+		auto token = start_token(handle.id);
+		if (!token)
+		{
+			return std::unexpected(token.error());
+		}
+
+		if (token.value() != handle.start_token)
+		{
+			return std::unexpected(std::format("process {} is not the recorded instance", handle.id));
+		}
+
+		if (::kill(static_cast<pid_t>(handle.id), 0) != 0 && errno != EPERM)
+		{
+			return std::unexpected(std::format("cannot signal process {}: {}", handle.id, std::strerror(errno)));
+		}
+
+		std::scoped_lock<std::mutex> guard(mutex_);
+		finished_.erase(handle.id);
+		adopted_.insert(handle.id);
+
+		return handle;
 	}
 
 	auto PosixProcessSupervisor::stop(const ProcessHandle& handle, std::chrono::seconds timeout) -> std::expected<void, std::string>
@@ -194,6 +245,8 @@ namespace Process
 		{
 			return std::unexpected("invalid process handle");
 		}
+
+		const auto is_adopted = adopted(handle.id);
 
 		auto current = status(handle);
 		if (!current)
@@ -233,6 +286,11 @@ namespace Process
 			return std::unexpected(std::format("cannot send SIGKILL to {}: {}", handle.id, std::strerror(errno)));
 		}
 
+		if (is_adopted)
+		{
+			return settle(handle, timeout);
+		}
+
 		auto reaped = reap(handle.id);
 		if (!reaped)
 		{
@@ -256,6 +314,11 @@ namespace Process
 			{
 				return cached->second;
 			}
+		}
+
+		if (adopted(handle.id))
+		{
+			return adopted_status(handle);
 		}
 
 		int wait_status = 0;
@@ -282,6 +345,85 @@ namespace Process
 		finished_.insert({ handle.id, status });
 
 		return status;
+	}
+
+	auto PosixProcessSupervisor::adopted(int64_t id) -> bool
+	{
+		std::scoped_lock<std::mutex> guard(mutex_);
+
+		return adopted_.contains(id);
+	}
+
+	auto PosixProcessSupervisor::adopted_status(const ProcessHandle& handle) -> std::expected<ProcessStatus, std::string>
+	{
+		const auto id = handle.id;
+
+		int wait_status = 0;
+		const pid_t result = ::waitpid(static_cast<pid_t>(id), &wait_status, WNOHANG);
+
+		if (result > 0)
+		{
+			const auto status = to_status(wait_status);
+
+			std::scoped_lock<std::mutex> guard(mutex_);
+			finished_.insert({ id, status });
+			adopted_.erase(id);
+
+			return status;
+		}
+
+		if (result == 0)
+		{
+			return ProcessStatus{ ProcessState::Running, std::nullopt, std::nullopt };
+		}
+
+		if (errno != ECHILD)
+		{
+			return std::unexpected(std::format("cannot query process {}: {}", id, std::strerror(errno)));
+		}
+
+		if (::kill(static_cast<pid_t>(id), 0) == 0 || errno == EPERM)
+		{
+			auto token = start_token(id);
+			if (token && token.value() == handle.start_token)
+			{
+				return ProcessStatus{ ProcessState::Running, std::nullopt, std::nullopt };
+			}
+		}
+		else if (errno != ESRCH)
+		{
+			return std::unexpected(std::format("cannot query process {}: {}", id, std::strerror(errno)));
+		}
+
+		const ProcessStatus status{ ProcessState::Exited, std::nullopt, std::nullopt };
+
+		std::scoped_lock<std::mutex> guard(mutex_);
+		finished_.insert({ id, status });
+		adopted_.erase(id);
+
+		return status;
+	}
+
+	auto PosixProcessSupervisor::settle(const ProcessHandle& handle, std::chrono::seconds timeout) -> std::expected<void, std::string>
+	{
+		const auto deadline = std::chrono::steady_clock::now() + timeout;
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			auto polled = adopted_status(handle);
+			if (!polled)
+			{
+				return std::unexpected(polled.error());
+			}
+
+			if (polled.value().state != ProcessState::Running)
+			{
+				return {};
+			}
+
+			std::this_thread::sleep_for(kPollInterval);
+		}
+
+		return std::unexpected(std::format("process {} is still alive after SIGKILL", handle.id));
 	}
 
 	auto PosixProcessSupervisor::reap(int64_t id) -> std::expected<ProcessStatus, std::string>
