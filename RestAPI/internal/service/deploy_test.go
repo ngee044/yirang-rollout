@@ -427,7 +427,7 @@ func TestCommandValidatesDownloadPayloadLikeDeploy(t *testing.T) {
 }
 
 func TestDeployRejectsPathReferenceReleaseID(t *testing.T) {
-	for _, releaseID := range []string{".", ".."} {
+	for _, releaseID := range []string{".", "..", "D:", "C:/releases"} {
 		t.Run(releaseID, func(t *testing.T) {
 			svc, publisher, _ := newService(t, fleet(1))
 
@@ -457,5 +457,45 @@ func TestPublishFailsWhenNoTargetAccepts(t *testing.T) {
 	}
 	if got := apierr.From(err).Code; got != apierr.CodePublishFailed {
 		t.Fatalf("code = %q, want %q", got, apierr.CodePublishFailed)
+	}
+}
+
+func TestPublishedEnvelopeCarriesTheTargetGroup(t *testing.T) {
+	svc, publisher, _ := newService(t, fleet(1))
+
+	if _, err := svc.Deploy(context.Background(), validDeploy()); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+
+	var envelope models.AgentMessage
+	if err := json.Unmarshal([]byte(publisher.anyBody(t)), &envelope); err != nil {
+		t.Fatalf("published body is not an envelope: %v", err)
+	}
+	if envelope.TargetGroup != "kiosk" {
+		t.Errorf("target_group = %q, want kiosk", envelope.TargetGroup)
+	}
+	if body := publisher.anyBody(t); !strings.Contains(body, `"target_group":"kiosk"`) {
+		t.Errorf("the wire field must be target_group: %s", body)
+	}
+}
+
+func TestPublishedEnvelopeOmitsAnEmptyTargetGroup(t *testing.T) {
+	svc, publisher, _ := newService(t, fleet(1))
+
+	if _, err := svc.Command(context.Background(), CommandRequest{Command: models.CommandCurrentStatus}); err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+
+	body := publisher.anyBody(t)
+	if strings.Contains(body, "target_group") {
+		t.Errorf("an envelope for every device must not name a group: %s", body)
+	}
+
+	var envelope models.AgentMessage
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		t.Fatalf("published body is not an envelope: %v", err)
+	}
+	if envelope.TargetGroup != "" {
+		t.Errorf("target_group = %q, want empty", envelope.TargetGroup)
 	}
 }

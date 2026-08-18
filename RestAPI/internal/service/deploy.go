@@ -149,6 +149,7 @@ func (s *Service) publish(ctx context.Context, command, group string, payload js
 	body, err := json.Marshal(models.AgentMessage{
 		Command:       command,
 		Payload:       payload,
+		TargetGroup:   group,
 		ReplyQueueURL: s.cfg.ResultQueueURL,
 	})
 	if err != nil {
@@ -230,6 +231,9 @@ func validateObjectKey(releaseID, installPath string, index int) error {
 	}
 	if strings.ContainsAny(releaseID, `/\`) {
 		return apierr.BadRequest("release_id must not contain a path separator: %q", releaseID)
+	}
+	if len(releaseID) >= 2 && releaseID[1] == ':' {
+		return apierr.BadRequest("release_id must not be a drive path: %q", releaseID)
 	}
 	if releaseID == "." || releaseID == ".." {
 		return apierr.BadRequest("release_id must not be a path reference: %q", releaseID)
