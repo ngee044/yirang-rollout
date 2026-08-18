@@ -59,7 +59,7 @@ sequenceDiagram
     CLI->>S3: 파일 묶음 · 매니페스트 업로드
     CLI->>API: POST /api/v1/deployments
     API->>API: 대상 큐 결정 (DEVICE_QUEUES · group 매칭)
-    API->>CQ: 명령 fanout — {command, payload, reply_queue_url}
+    API->>CQ: 명령 fanout — {command, payload, target_group, reply_queue_url}
     API-->>CLI: 발행 결과 (targeted · published)
 
     Agent->>CQ: 폴링 (long poll)
@@ -145,9 +145,12 @@ REST API 서버에는 **인증이 없습니다.** 의도된 선택입니다.
   "target_group": "kiosk",
   "s3_bucket": "yirang-releases",
   "s3_region": "ap-northeast-2",
-  "s3_endpoint": ""
+  "s3_endpoint": "",
+  "allow_insecure_tls": false
 }
 ```
+
+`s3_endpoint`에 스킴을 생략하면 **HTTPS**로 붙습니다. 평문으로 붙어야 하는 로컬 저장소는 `http://`를 명시하십시오. `allow_insecure_tls`는 인증서 검증을 끄는 opt-in이며(기본 `false`) 신뢰된 사설망 전용입니다.
 
 `install_path`는 파일명으로 정해집니다. 서로 다른 디렉터리의 같은 파일명은 설치 시 서로를 덮어쓰므로 매니페스트 생성 단계에서 거부합니다.
 
@@ -189,6 +192,8 @@ AWS_REGION=ap-northeast-2
 
 `service.executable`은 **릴리스 디렉터리 기준 상대 경로**입니다. 절대 경로를 허용하면 릴리스 밖을 실행할 수 있어 "검증 전 아티팩트를 실행하지 않는다"가 무너집니다.
 
+`group`은 이 기기의 큐가 `DEVICE_QUEUES`에서 갖는 `group`과 같은 값이어야 합니다. 다르면 그룹을 지정한 명령이 전부 거부되고 사유가 결과 큐로 보고됩니다(`yirang results`). 그룹을 쓰지 않는 단일 플릿이면 양쪽 모두 비워 둡니다. 교차 확인은 **그룹 단위**로만 오배달을 걸러냅니다 — 같은 그룹 안에서 큐 URL이 뒤바뀐 경우는 검출하지 못합니다. `result_queue_url`은 명령 큐와 같을 수 없습니다(결과가 명령으로 다시 소비됩니다).
+
 `health.kind`가 `process`면 프로세스 생존만 봅니다. `success_threshold × interval_ms`가 곧 "정상으로 인정하는 최소 생존 시간"이므로, 기동 후 잠깐 살다 죽는 릴리스를 걸러내려면 서비스 기동 시간보다 넉넉하게 잡으십시오.
 
 ## CLI 사용법
@@ -216,15 +221,27 @@ yirang --control_plane_url http://127.0.0.1:8080 \
 
 ## 배포 명령
 
-큐로 오가는 봉투는 `{command, payload, reply_queue_url}` 세 필드입니다. Agent는 `command`로 핸들러 맵에서 처리기를 찾습니다.
+큐로 오가는 봉투는 `{command, payload, target_group, reply_queue_url}` 네 필드입니다. Agent는 `command`로 핸들러 맵에서 처리기를 찾습니다.
+
+`target_group`은 선택 필드이며, 값이 있으면 Agent가 자기 설정의 `group`과 대조해 다를 때 명령을 거부하고 사유를 결과 큐로 보고합니다 — 큐 URL 오설정·기기 교체 시의 오배달 방어입니다. 서버 측 큐 목록(환경변수)과 기기 측 `group`(설정 파일)은 출처가 독립이라 교차 확인이 성립합니다.
 
 | 명령 | 동작 |
 |------|------|
 | `download_version` | 릴리스를 `<version_root>/<release_id>/`로 내려받고 파일마다 SHA-256 검증 |
 | `apply_version` | 프로세스 중단 → 교체 → 재시작 |
 | `current_status` | 디스크 용량·코어 수·받아둔 버전 목록 보고 |
-| `clean_old_version` | `version_root` 하위 정리 |
+| `clean_old_version` | `version_root` 하위 정리 — **CLI가 확인을 요구합니다**(아래) |
 | `rollback_version` | 지정 버전으로 되돌리기 |
+
+`clean_old_version`은 대상 기기의 받아둔 버전을 **전부** 지우고, `target_group`이 비어 있으면 대상이 **등록된 전체 디바이스**입니다. 그래서 CLI가 발행 전에 확인을 받습니다 — 대화형 터미널에서는 명령 이름(`clean_old_version`)을 그대로 입력해야 하고, 파이프·CI처럼 터미널이 아니면 `--confirm clean_old_version`이 없으면 거부합니다.
+
+```bash
+yirang command clean_old_version --confirm clean_old_version    # 비대화형(스크립트·CI)
+```
+
+가드는 CLI에만 있습니다. REST API를 직접 호출하면 확인 없이 발행됩니다.
+
+Agent는 재시도해도 결과가 같은 실패(계약 위반·해시 불일치·객체 부재)를 보고한 뒤 메시지를 소비하고, 일시적 실패는 같은 메시지 연속 5회까지만 재시도합니다. 최종 상한은 큐 쪽에 두는 것이 원칙이므로 **디바이스 명령 큐에는 redrive 정책(`maxReceiveCount` + DLQ)을 설정하십시오.**
 
 ## 개요
 

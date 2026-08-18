@@ -4,6 +4,9 @@
 #include "ReleaseManifest.h"
 #include "S3ArtifactStore.h"
 
+#include <aws/s3/S3ClientConfiguration.h>
+#include <aws/s3/S3EndpointProvider.h>
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -41,6 +44,36 @@ namespace
 		}
 
 		return options;
+	}
+
+	auto initialise_aws_runtime(void) -> S3ArtifactStore
+	{
+		StoreOptions options;
+		options.bucket = "yirang-test";
+		options.endpoint = "http://127.0.0.1:1";
+
+		return S3ArtifactStore(options);
+	}
+
+	auto resolve_endpoint(const std::string& endpoint) -> std::string
+	{
+		Aws::S3::S3ClientConfiguration configuration;
+		configuration.region = "us-east-1";
+		configuration.endpointOverride = endpoint.c_str();
+
+		auto provider = Aws::MakeShared<Aws::S3::Endpoint::S3EndpointProvider>("yirang-test");
+		provider->InitBuiltInParameters(configuration);
+
+		Aws::Endpoint::EndpointParameters parameters;
+		parameters.emplace_back(Aws::Endpoint::EndpointParameter("Bucket", Aws::String("yirang-test")));
+
+		const auto outcome = provider->ResolveEndpoint(parameters);
+		if (!outcome.IsSuccess())
+		{
+			return std::string();
+		}
+
+		return outcome.GetResult().GetURL().c_str();
 	}
 
 	class TemporaryTree
@@ -126,6 +159,21 @@ TEST(ArtifactKeyTest, AllowsDotsInsideFileName)
 	EXPECT_EQ(key.value(), "releases/rel_1/app..v2.exe");
 }
 
+TEST(ArtifactKeyTest, ValidateReleaseIdAndMakeObjectKeyShareOneRule)
+{
+	for (const auto* release_id : { "", ".", "..", "../neighbour", "rel/1", "rel\\1" })
+	{
+		const auto validated = validate_release_id(release_id);
+		const auto key = make_object_key(release_id, "app.exe");
+
+		ASSERT_FALSE(validated.has_value()) << release_id;
+		ASSERT_FALSE(key.has_value()) << release_id;
+		EXPECT_EQ(validated.error(), key.error()) << release_id;
+	}
+
+	EXPECT_TRUE(validate_release_id("rel_20260808_1").has_value());
+}
+
 TEST(ArtifactStoreTest, RejectsOperationsWithoutBucket)
 {
 	StoreOptions options;
@@ -207,4 +255,35 @@ TEST(ArtifactStoreIntegrationTest, RoundTripPreservesContent)
 	const auto actual = Release::ReleaseManifest::file_sha256(destination);
 	ASSERT_TRUE(actual.has_value());
 	EXPECT_EQ(actual.value(), expected.value());
+}
+
+TEST(ArtifactStoreTest, TlsVerificationIsOptOutOnly)
+{
+	StoreOptions options;
+
+	EXPECT_FALSE(options.allow_insecure_tls);
+
+	options.bucket = "yirang-test";
+	options.endpoint = "https://storage.internal:9000";
+	options.allow_insecure_tls = true;
+
+	const S3ArtifactStore store(options);
+
+	EXPECT_TRUE(store.options().allow_insecure_tls);
+}
+
+TEST(ArtifactStoreTest, PlainHttpEndpointStaysPlainHttp)
+{
+	const auto runtime = initialise_aws_runtime();
+
+	EXPECT_TRUE(resolve_endpoint("http://127.0.0.1:4566").starts_with("http://")) << resolve_endpoint("http://127.0.0.1:4566");
+}
+
+TEST(ArtifactStoreTest, EndpointSchemeDecidesTransport)
+{
+	const auto runtime = initialise_aws_runtime();
+
+	EXPECT_TRUE(resolve_endpoint("https://account.r2.cloudflarestorage.com").starts_with("https://")) << resolve_endpoint("https://account.r2.cloudflarestorage.com");
+
+	EXPECT_TRUE(resolve_endpoint("storage.internal:9000").starts_with("https://")) << resolve_endpoint("storage.internal:9000");
 }

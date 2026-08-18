@@ -3,6 +3,7 @@
 #include "ArgumentParser.h"
 #include "Commands.h"
 #include "Configurations.h"
+#include "Confirmation.h"
 #include "IArtifactStore.h"
 #include "RestClient.h"
 
@@ -11,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -299,4 +301,223 @@ TEST(RestClientTest, ReportsUnreachableHostAsFailure)
 
 	ASSERT_FALSE(result.has_value());
 	EXPECT_NE(result.error().find("cannot reach"), std::string::npos);
+}
+
+TEST(DeployCliTest, InsecureTlsDefaultsToFalseAndIsOptIn)
+{
+	const auto missing = make_configurations({});
+	EXPECT_FALSE(missing->allow_insecure_tls());
+
+	TemporaryTree tree;
+	const auto path = tree.write("cli.json", R"({"allow_insecure_tls": true})");
+
+	const auto from_file = make_configurations({ "--config_path", path });
+	EXPECT_TRUE(from_file->allow_insecure_tls());
+
+	const auto from_command_line = make_configurations({ "--config_path", path, "--allow_insecure_tls", "false" });
+	EXPECT_FALSE(from_command_line->allow_insecure_tls());
+}
+
+TEST(ConfirmationTest, MatchingTokenSkipsThePrompt)
+{
+	std::istringstream input;
+	std::ostringstream output;
+
+	Confirmation confirmation("clean_old_version", true, input, output);
+
+	EXPECT_TRUE(confirmation.require("clean_old_version", "group 'kiosk'").has_value());
+	EXPECT_TRUE(output.str().empty());
+}
+
+TEST(ConfirmationTest, TokenNamingAnotherCommandIsRefused)
+{
+	std::istringstream input("clean_old_version\n");
+	std::ostringstream output;
+
+	Confirmation confirmation("rollback_version", true, input, output);
+
+	const auto result = confirmation.require("clean_old_version", "group 'kiosk'");
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("--confirm clean_old_version"), std::string::npos) << result.error();
+	EXPECT_TRUE(output.str().empty());
+}
+
+TEST(ConfirmationTest, NonInteractiveInputIsRefusedInsteadOfApproved)
+{
+	std::istringstream input("clean_old_version\n");
+	std::ostringstream output;
+
+	Confirmation confirmation("", false, input, output);
+
+	const auto result = confirmation.require("clean_old_version", "every registered device");
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("--confirm clean_old_version"), std::string::npos) << result.error();
+	EXPECT_NE(result.error().find("every registered device"), std::string::npos) << result.error();
+	EXPECT_TRUE(output.str().empty());
+}
+
+TEST(ConfirmationTest, InteractiveApprovalNeedsTheExactCommandName)
+{
+	for (const auto& answer : { "clean_old_version\n", "  clean_old_version  \n", "clean_old_version\r\n" })
+	{
+		std::istringstream input(answer);
+		std::ostringstream output;
+		Confirmation confirmation("", true, input, output);
+
+		EXPECT_TRUE(confirmation.require("clean_old_version", "every registered device").has_value()) << answer;
+	}
+
+	for (const auto& answer : { "y\n", "yes\n", "\n", "", "clean_old\n" })
+	{
+		std::istringstream input(answer);
+		std::ostringstream output;
+		Confirmation confirmation("", true, input, output);
+
+		const auto result = confirmation.require("clean_old_version", "every registered device");
+
+		ASSERT_FALSE(result.has_value()) << answer;
+		EXPECT_NE(result.error().find("was not confirmed"), std::string::npos) << answer;
+	}
+}
+
+TEST(ConfirmationTest, PromptNamesTheCommandAndTheScope)
+{
+	std::istringstream input("clean_old_version\n");
+	std::ostringstream output;
+
+	Confirmation confirmation("", true, input, output);
+
+	ASSERT_TRUE(confirmation.require("clean_old_version", "every registered device").has_value());
+	EXPECT_NE(output.str().find("clean_old_version"), std::string::npos) << output.str();
+	EXPECT_NE(output.str().find("every registered device"), std::string::npos) << output.str();
+}
+
+TEST(DeployCliTest, DestructiveCommandIsNotPublishedWhenTheOperatorDeclines)
+{
+	auto configurations = make_configurations({ "--control_plane_url", "http://127.0.0.1:1", "--target_group", "kiosk" });
+
+	std::istringstream input("n\n");
+	std::ostringstream output;
+	auto confirmation = std::make_shared<Confirmation>("", true, input, output);
+
+	Commands commands(*configurations, nullptr, unreachable_client(), confirmation);
+
+	const auto result = commands.run("command", { "clean_old_version" });
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("was not confirmed"), std::string::npos) << result.error();
+	EXPECT_EQ(result.error().find("cannot reach"), std::string::npos) << result.error();
+	EXPECT_NE(output.str().find("group 'kiosk'"), std::string::npos) << output.str();
+}
+
+TEST(DeployCliTest, DestructiveCommandWithoutATargetGroupSaysTheWholeFleetIsHit)
+{
+	TemporaryTree tree;
+	const auto path = tree.write("fleet.json", R"({"control_plane_url":"http://127.0.0.1:1","target_group":""})");
+
+	auto configurations = make_configurations({ "--config_path", path });
+
+	std::istringstream input("n\n");
+	std::ostringstream output;
+	auto confirmation = std::make_shared<Confirmation>("", true, input, output);
+
+	Commands commands(*configurations, nullptr, unreachable_client(), confirmation);
+
+	const auto result = commands.run("command", { "clean_old_version" });
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(output.str().find("every registered device"), std::string::npos) << output.str();
+}
+
+TEST(DeployCliTest, ConfirmedDestructiveCommandReachesTheRestStage)
+{
+	auto configurations = make_configurations({ "--control_plane_url", "http://127.0.0.1:1", "--target_group", "kiosk", "--confirm", "clean_old_version" });
+
+	ASSERT_EQ(configurations->confirm_token(), "clean_old_version");
+
+	std::istringstream input;
+	std::ostringstream output;
+	auto confirmation = std::make_shared<Confirmation>(configurations->confirm_token(), false, input, output);
+
+	Commands commands(*configurations, nullptr, unreachable_client(), confirmation);
+
+	const auto result = commands.run("command", { "clean_old_version" });
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("cannot reach"), std::string::npos) << result.error();
+	EXPECT_TRUE(output.str().empty());
+}
+
+TEST(DeployCliTest, NonDestructiveCommandsAreNeverHeldForConfirmation)
+{
+	auto configurations = make_configurations({ "--control_plane_url", "http://127.0.0.1:1" });
+
+	std::istringstream input;
+	std::ostringstream output;
+	auto confirmation = std::make_shared<Confirmation>("", false, input, output);
+
+	Commands commands(*configurations, nullptr, unreachable_client(), confirmation);
+
+	for (const auto& name : { "download_version", "apply_version", "current_status", "rollback_version" })
+	{
+		const auto result = commands.run("command", { name });
+
+		ASSERT_FALSE(result.has_value()) << name;
+		EXPECT_NE(result.error().find("cannot reach"), std::string::npos) << name << " — " << result.error();
+	}
+
+	EXPECT_TRUE(output.str().empty());
+}
+
+TEST(DeployCliTest, DestructiveCommandIsRefusedWhenNoConfirmationIsWired)
+{
+	auto configurations = make_configurations({ "--control_plane_url", "http://127.0.0.1:1", "--target_group", "kiosk" });
+
+	Commands commands(*configurations, nullptr, unreachable_client());
+
+	const auto result = commands.run("command", { "clean_old_version" });
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("confirmation is not available"), std::string::npos) << result.error();
+	EXPECT_EQ(result.error().find("cannot reach"), std::string::npos) << result.error();
+}
+
+TEST(DeployCliTest, DestructiveCommandIsRefusedWhenTheScopeIsASilentDefault)
+{
+	auto configurations = make_configurations({ "--control_plane_url", "http://127.0.0.1:1" });
+
+	ASSERT_TRUE(configurations->load_warning() != std::nullopt);
+	ASSERT_TRUE(configurations->target_group().empty());
+
+	std::istringstream input;
+	std::ostringstream output;
+	auto confirmation = std::make_shared<Confirmation>("clean_old_version", false, input, output);
+
+	Commands commands(*configurations, nullptr, unreachable_client(), confirmation);
+
+	const auto result = commands.run("command", { "clean_old_version" });
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("--target_group"), std::string::npos) << result.error();
+	EXPECT_EQ(result.error().find("cannot reach"), std::string::npos) << result.error();
+}
+
+TEST(DeployCliTest, DestructiveCommandRunsWithAnExplicitGroupEvenWithoutAConfigFile)
+{
+	auto configurations = make_configurations({ "--control_plane_url", "http://127.0.0.1:1", "--target_group", "kiosk", "--confirm", "clean_old_version" });
+
+	ASSERT_TRUE(configurations->load_warning() != std::nullopt);
+
+	std::istringstream input;
+	std::ostringstream output;
+	auto confirmation = std::make_shared<Confirmation>(configurations->confirm_token(), false, input, output);
+
+	Commands commands(*configurations, nullptr, unreachable_client(), confirmation);
+
+	const auto result = commands.run("command", { "clean_old_version" });
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("cannot reach"), std::string::npos) << result.error();
 }

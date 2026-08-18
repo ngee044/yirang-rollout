@@ -68,6 +68,35 @@ namespace
 		std::ifstream stream(path, std::ios::binary);
 		return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
 	}
+
+	auto retired_directory(const ReleaseInstaller& installer, const std::string& release_id) -> std::filesystem::path
+	{
+		return std::filesystem::path(installer.release_directory(release_id)).parent_path() / (".retired-" + release_id);
+	}
+
+	auto deletion_is_enforced(void) -> bool
+	{
+		static const auto token = std::to_string(std::random_device{}());
+
+		const auto probe = std::filesystem::temp_directory_path() / ("yirang-install-perm-probe-" + token);
+
+		std::error_code ignored;
+		std::filesystem::remove_all(probe, ignored);
+		std::filesystem::create_directories(probe);
+
+		std::ofstream(probe / "locked.txt") << "locked";
+		std::filesystem::permissions(probe, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec, ignored);
+
+		std::error_code error;
+		std::filesystem::remove(probe / "locked.txt", error);
+
+		const bool enforced = static_cast<bool>(error);
+
+		std::filesystem::permissions(probe, std::filesystem::perms::owner_all, std::filesystem::perm_options::add, ignored);
+		std::filesystem::remove_all(probe, ignored);
+
+		return enforced;
+	}
 }
 
 TEST(ReleaseInstallerTest, InstallPlacesEveryFileUnderTheReleaseDirectory)
@@ -287,4 +316,168 @@ TEST(ReleaseInstallerTest, InstalledIgnoresStagingDirectories)
 	ASSERT_TRUE(releases.has_value());
 	ASSERT_EQ(releases.value().size(), 1u);
 	EXPECT_EQ(releases.value().at(0), "rel_1");
+}
+
+TEST(ReleaseInstallerTest, ReinstallReplacesAReleaseWhoseFilesCannotBeDeleted)
+{
+	if (!deletion_is_enforced())
+	{
+		GTEST_SKIP() << "this filesystem does not enforce directory write permission";
+	}
+
+	TemporaryTree tree;
+	tree.stage("rel_1", "app.exe", "first");
+	auto installer = make_installer(tree);
+
+	ASSERT_TRUE(installer.install("rel_1", tree.cache_directory("rel_1")).has_value());
+
+	const auto target = std::filesystem::path(installer.release_directory("rel_1"));
+
+	std::error_code ignored;
+	std::filesystem::permissions(target, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec, ignored);
+
+	tree.stage("rel_1", "app.exe", "second");
+	const auto reinstalled = installer.install("rel_1", tree.cache_directory("rel_1"));
+
+	for (const auto& entry : std::filesystem::directory_iterator(target.parent_path()))
+	{
+		if (entry.path().filename().string().rfind(".retired-", 0) == 0)
+		{
+			std::filesystem::permissions(entry.path(), std::filesystem::perms::owner_all, std::filesystem::perm_options::add, ignored);
+		}
+	}
+
+	ASSERT_TRUE(reinstalled.has_value()) << (reinstalled.has_value() ? "" : reinstalled.error());
+	EXPECT_EQ(read_file((target / "app.exe").string()), "second");
+
+	auto releases = installer.installed();
+	ASSERT_TRUE(releases.has_value());
+	ASSERT_EQ(releases.value().size(), 1u);
+	EXPECT_EQ(releases.value().at(0), "rel_1");
+}
+
+TEST(ReleaseInstallerTest, ReinstallKeepsTheInstalledReleaseWhenTheSwapCannotStart)
+{
+	if (!deletion_is_enforced())
+	{
+		GTEST_SKIP() << "this filesystem does not enforce directory write permission";
+	}
+
+	TemporaryTree tree;
+	tree.stage("rel_1", "app.exe", "first");
+	auto installer = make_installer(tree);
+
+	ASSERT_TRUE(installer.install("rel_1", tree.cache_directory("rel_1")).has_value());
+
+	const auto retired = retired_directory(installer, "rel_1");
+	std::filesystem::create_directories(retired);
+	std::ofstream(retired / "leftover.txt") << "leftover";
+
+	std::error_code ignored;
+	std::filesystem::permissions(retired, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec, ignored);
+
+	tree.stage("rel_1", "app.exe", "second");
+	const auto reinstalled = installer.install("rel_1", tree.cache_directory("rel_1"));
+
+	std::filesystem::permissions(retired, std::filesystem::perms::owner_all, std::filesystem::perm_options::add, ignored);
+
+	ASSERT_FALSE(reinstalled.has_value());
+	EXPECT_EQ(read_file((std::filesystem::path(installer.release_directory("rel_1")) / "app.exe").string()), "first");
+
+	for (const auto& entry : std::filesystem::directory_iterator(retired.parent_path()))
+	{
+		EXPECT_NE(entry.path().filename().string().rfind(".staging-", 0), 0u) << entry.path().string();
+	}
+}
+
+TEST(ReleaseInstallerTest, InstallRecoversTheReleaseSlotLeftBehindByAnInterruptedSwap)
+{
+	TemporaryTree tree;
+	tree.stage("rel_1", "app.exe", "first");
+	auto installer = make_installer(tree);
+
+	ASSERT_TRUE(installer.install("rel_1", tree.cache_directory("rel_1")).has_value());
+
+	const auto target = std::filesystem::path(installer.release_directory("rel_1"));
+	const auto retired = retired_directory(installer, "rel_1");
+
+	std::error_code error;
+	std::filesystem::rename(target, retired, error);
+	ASSERT_FALSE(error) << error.message();
+	ASSERT_FALSE(std::filesystem::exists(target));
+
+	tree.stage("rel_1", "app.exe", "second");
+	const auto reinstalled = installer.install("rel_1", tree.cache_directory("rel_1"));
+
+	ASSERT_TRUE(reinstalled.has_value()) << (reinstalled.has_value() ? "" : reinstalled.error());
+	EXPECT_EQ(read_file((target / "app.exe").string()), "second");
+	EXPECT_FALSE(std::filesystem::exists(retired));
+}
+
+TEST(ReleaseInstallerTest, ReinstallLeavesNoRetiredDirectoryBehind)
+{
+	TemporaryTree tree;
+	tree.stage("rel_1", "app.exe", "first");
+	auto installer = make_installer(tree);
+
+	ASSERT_TRUE(installer.install("rel_1", tree.cache_directory("rel_1")).has_value());
+
+	tree.stage("rel_1", "app.exe", "second");
+	ASSERT_TRUE(installer.install("rel_1", tree.cache_directory("rel_1")).has_value());
+
+	EXPECT_FALSE(std::filesystem::exists(retired_directory(installer, "rel_1")));
+}
+
+TEST(ReleaseInstallerTest, InstallSweepsRetiredLeftoversFromEarlierSwaps)
+{
+	TemporaryTree tree;
+	tree.stage("rel_1", "app.exe", "one");
+	auto installer = make_installer(tree);
+
+	auto leftover = retired_directory(installer, "rel_9");
+	leftover += ".12345";
+	std::filesystem::create_directories(leftover);
+	std::ofstream(leftover / "app.exe") << "stale";
+
+	ASSERT_TRUE(installer.install("rel_1", tree.cache_directory("rel_1")).has_value());
+
+	EXPECT_FALSE(std::filesystem::exists(leftover));
+}
+
+TEST(ReleaseInstallerTest, InstalledAndPruneIgnoreRetiredDirectories)
+{
+	TemporaryTree tree;
+	tree.stage("rel_1", "app.exe", "one");
+	auto installer = make_installer(tree, 0);
+
+	ASSERT_TRUE(installer.install("rel_1", tree.cache_directory("rel_1")).has_value());
+	ASSERT_TRUE(installer.activate("rel_1").has_value());
+
+	const auto retired = retired_directory(installer, "rel_9");
+	std::filesystem::create_directories(retired);
+
+	auto releases = installer.installed();
+	ASSERT_TRUE(releases.has_value());
+	ASSERT_EQ(releases.value().size(), 1u);
+	EXPECT_EQ(releases.value().at(0), "rel_1");
+
+	auto removed = installer.prune();
+	ASSERT_TRUE(removed.has_value()) << (removed.has_value() ? "" : removed.error());
+	EXPECT_EQ(removed.value(), 0u);
+	EXPECT_TRUE(std::filesystem::exists(retired));
+}
+
+TEST(ReleaseInstallerTest, InstallRejectsInternalDirectoryNamesAsReleaseId)
+{
+	TemporaryTree tree;
+	tree.stage("rel_1", "app.exe", "one");
+	auto installer = make_installer(tree);
+
+	for (const auto& release_id : { ".staging-rel_1", ".retired-rel_1" })
+	{
+		const auto installed = installer.install(release_id, tree.cache_directory("rel_1"));
+
+		ASSERT_FALSE(installed.has_value()) << release_id;
+		EXPECT_NE(installed.error().find("internal name"), std::string::npos) << installed.error();
+	}
 }

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "PosixProcessSupervisor.h"
+#include "ProcessIdentity.h"
 
 #include <chrono>
 #include <filesystem>
@@ -9,6 +10,8 @@
 #include <string>
 #include <thread>
 #include <random>
+
+#include <unistd.h>
 
 using namespace Process;
 
@@ -183,4 +186,130 @@ TEST(ProcessSupervisorTest, AppliesEnvironmentOverrides)
 	ASSERT_EQ(status.state, ProcessState::Exited);
 
 	EXPECT_EQ(directory.read("env.txt"), "rel_230");
+}
+
+TEST(ProcessSupervisorTest, StartFillsTheStartToken)
+{
+	PosixProcessSupervisor supervisor;
+
+	const auto handle = supervisor.start({ kShell, { "-c", "sleep 30" }, "", {} });
+	ASSERT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
+
+	EXPECT_NE(handle.value().start_token, 0u);
+
+	auto queried = start_token(handle.value().id);
+	ASSERT_TRUE(queried.has_value()) << (queried.has_value() ? "" : queried.error());
+	EXPECT_EQ(queried.value(), handle.value().start_token);
+
+	EXPECT_TRUE(supervisor.stop(handle.value(), std::chrono::seconds(2)).has_value());
+}
+
+TEST(ProcessSupervisorTest, AdoptRefusesADifferentStartToken)
+{
+	PosixProcessSupervisor owner;
+
+	const auto handle = owner.start({ kShell, { "-c", "sleep 30" }, "", {} });
+	ASSERT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
+
+	PosixProcessSupervisor successor;
+	const auto refused = successor.adopt(ProcessHandle{ handle.value().id, handle.value().start_token + 1 });
+
+	ASSERT_FALSE(refused.has_value());
+	EXPECT_NE(refused.error().find("not the recorded instance"), std::string::npos) << refused.error();
+
+	const auto untouched = owner.status(handle.value());
+	ASSERT_TRUE(untouched.has_value());
+	EXPECT_EQ(untouched.value().state, ProcessState::Running);
+
+	EXPECT_TRUE(owner.stop(handle.value(), std::chrono::seconds(2)).has_value());
+}
+
+TEST(ProcessSupervisorTest, AdoptRefusesAHandleWithoutAStartToken)
+{
+	PosixProcessSupervisor owner;
+
+	const auto handle = owner.start({ kShell, { "-c", "sleep 30" }, "", {} });
+	ASSERT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
+
+	PosixProcessSupervisor successor;
+	const auto refused = successor.adopt(ProcessHandle{ handle.value().id, 0 });
+
+	ASSERT_FALSE(refused.has_value());
+	EXPECT_NE(refused.error().find("no start token"), std::string::npos) << refused.error();
+
+	EXPECT_TRUE(owner.stop(handle.value(), std::chrono::seconds(2)).has_value());
+}
+
+TEST(ProcessSupervisorTest, AdoptRefusesAProcessThatIsGone)
+{
+	PosixProcessSupervisor owner;
+
+	const auto handle = owner.start({ kShell, { "-c", "exit 0" }, "", {} });
+	ASSERT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
+
+	const auto finished = wait_until_finished(owner, handle.value(), std::chrono::seconds(5));
+	ASSERT_EQ(finished.state, ProcessState::Exited);
+
+	PosixProcessSupervisor successor;
+	const auto refused = successor.adopt(handle.value());
+
+	ASSERT_FALSE(refused.has_value());
+}
+
+TEST(ProcessSupervisorTest, AdoptedProcessIsReportedRunningAndCanBeStopped)
+{
+	PosixProcessSupervisor owner;
+	const TemporaryDirectory directory;
+
+	const auto handle = owner.start({ kShell, { "-c", "trap '' TERM; : > ready; while :; do sleep 0.2; done" }, directory.path().string(), {} });
+	ASSERT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
+	ASSERT_TRUE(directory.wait_for("ready", std::chrono::seconds(5)));
+
+	PosixProcessSupervisor successor;
+	const auto taken = successor.adopt(handle.value());
+	ASSERT_TRUE(taken.has_value()) << (taken.has_value() ? "" : taken.error());
+
+	const auto running = successor.status(taken.value());
+	ASSERT_TRUE(running.has_value());
+	EXPECT_EQ(running.value().state, ProcessState::Running);
+
+	const auto stopped = successor.stop(taken.value(), std::chrono::seconds(1));
+	ASSERT_TRUE(stopped.has_value()) << (stopped.has_value() ? "" : stopped.error());
+
+	const auto after = successor.status(taken.value());
+	ASSERT_TRUE(after.has_value());
+	EXPECT_NE(after.value().state, ProcessState::Running);
+}
+
+TEST(ProcessIdentityTest, RejectsANonPositiveProcessId)
+{
+	const auto zero = start_token(0);
+	ASSERT_FALSE(zero.has_value());
+	EXPECT_EQ(zero.error(), "invalid process id");
+
+	const auto negative = start_token(-1);
+	ASSERT_FALSE(negative.has_value());
+	EXPECT_EQ(negative.error(), "invalid process id");
+}
+
+TEST(ProcessIdentityTest, ReturnsAStableTokenForTheCallingProcess)
+{
+	const auto first = start_token(static_cast<int64_t>(::getpid()));
+	ASSERT_TRUE(first.has_value()) << (first.has_value() ? "" : first.error());
+	EXPECT_NE(first.value(), 0u);
+
+	const auto second = start_token(static_cast<int64_t>(::getpid()));
+	ASSERT_TRUE(second.has_value());
+	EXPECT_EQ(first.value(), second.value());
+}
+
+TEST(ProcessIdentityTest, BootIdentityIsPresentAndStable)
+{
+	const auto first = boot_identity();
+	ASSERT_TRUE(first.has_value()) << (first.has_value() ? "" : first.error());
+	EXPECT_FALSE(first.value().empty());
+
+	const auto second = boot_identity();
+	ASSERT_TRUE(second.has_value());
+	EXPECT_EQ(first.value(), second.value());
 }

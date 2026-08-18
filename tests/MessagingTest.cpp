@@ -144,3 +144,18 @@ TEST(MessagingIntegrationTest, PublishedMessageReachesConsumer)
 
 	EXPECT_NE(received.find("current_status"), std::string::npos);
 }
+
+TEST(MessagingTest, TlsVerificationIsOptOutOnly)
+{
+	QueueOptions options;
+
+	EXPECT_FALSE(options.allow_insecure_tls);
+
+	options.queue_url = "https://queue.internal:9324/q";
+	options.endpoint = "https://queue.internal:9324";
+	options.allow_insecure_tls = true;
+
+	const SqsMessageConsumer consumer(options);
+
+	EXPECT_TRUE(consumer.options().allow_insecure_tls);
+}

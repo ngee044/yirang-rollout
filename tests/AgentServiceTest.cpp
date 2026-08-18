@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <string>
 #include <random>
@@ -50,6 +51,19 @@ namespace
 
 		auto version_root(void) const -> std::string { return (root_ / "versions").string(); }
 		auto service_root(void) const -> std::string { return (root_ / "service").string(); }
+
+		auto make_sibling(const std::string& name) -> std::string
+		{
+			const auto directory = root_ / name;
+
+			std::error_code error;
+			std::filesystem::create_directories(directory, error);
+
+			std::ofstream stream(directory / "secret.txt", std::ios::binary);
+			stream << "secret";
+
+			return directory.string();
+		}
 
 	private:
 		std::filesystem::path root_;
@@ -100,9 +114,55 @@ namespace
 		auto exists(const std::string&) -> std::expected<bool, std::string> override { return std::unexpected("not used"); }
 	};
 
+	class MissingObjectStore : public Artifact::IArtifactStore
+	{
+	public:
+		auto upload(const std::string&, const std::string&) -> std::expected<void, std::string> override { return std::unexpected("not used"); }
+
+		auto presign(const std::string&) -> std::expected<std::string, std::string> override { return std::unexpected("not used"); }
+
+		auto download(const std::string& object_key, const std::string&) -> std::expected<void, std::string> override
+		{
+			return std::unexpected(std::format("cannot download '{}': Failed to download file: Not Found", object_key));
+		}
+
+		auto exists(const std::string&) -> std::expected<bool, std::string> override { return false; }
+	};
+
+	class ContentStore : public Artifact::IArtifactStore
+	{
+	public:
+		explicit ContentStore(std::string content) : content_(std::move(content)) {}
+
+		auto upload(const std::string&, const std::string&) -> std::expected<void, std::string> override { return std::unexpected("not used"); }
+
+		auto presign(const std::string&) -> std::expected<std::string, std::string> override { return std::unexpected("not used"); }
+
+		auto download(const std::string&, const std::string& local_path) -> std::expected<void, std::string> override
+		{
+			std::error_code error;
+			std::filesystem::create_directories(std::filesystem::path(local_path).parent_path(), error);
+
+			std::ofstream stream(local_path, std::ios::binary);
+			stream << content_;
+
+			return {};
+		}
+
+		auto exists(const std::string&) -> std::expected<bool, std::string> override { return true; }
+
+	private:
+		std::string content_;
+	};
+
 	auto envelope(const std::string& command, const std::string& payload = "{}") -> std::string
 	{
 		return R"({"command":")" + command + R"(","payload":)" + payload + "}";
+	}
+
+	auto group_envelope(const std::string& command, const std::string& target_group) -> std::string
+	{
+		return R"({"command":")" + command + R"(","payload":{},"target_group":")" + target_group + R"("})";
 	}
 }
 
@@ -173,21 +233,25 @@ TEST(AgentServiceTest, CleanOldVersionRemovesEveryDownloadedVersion)
 	EXPECT_TRUE(std::filesystem::exists(tree.version_root()));
 }
 
-TEST(AgentServiceTest, CleanOldVersionRefusesWhenRootsAreIdentical)
+TEST(AgentServiceTest, CleanOldVersionRefusesAndConsumesWhenRootsAreIdentical)
 {
 	TemporaryTree tree;
 	tree.make_version("rel_1");
+	auto publisher = std::make_shared<RecordingPublisher>();
 
 	AgentOptions options;
 	options.version_root = tree.version_root();
 	options.service_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
 
-	AgentService service(options, nullptr);
+	AgentService service(options, nullptr, publisher);
 
 	const auto result = service.handle(envelope(Commands::kCleanOldVersion));
 
-	ASSERT_FALSE(result.has_value());
-	EXPECT_NE(result.error().find("service_root"), std::string::npos);
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(publisher->count(), 1);
+	EXPECT_NE(publisher->body().find("service_root"), std::string::npos) << publisher->body();
+	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
 	EXPECT_TRUE(std::filesystem::exists(tree.version_root() + "/rel_1"));
 }
 
@@ -253,19 +317,23 @@ TEST(AgentServiceTest, ApplyRejectsAVersionThatWasNotDownloaded)
 	EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(tree.service_root()) / "state.json"));
 }
 
-TEST(AgentServiceTest, DownloadVersionRejectsEmptyArtifacts)
+TEST(AgentServiceTest, DownloadVersionRejectsAndConsumesEmptyArtifacts)
 {
 	TemporaryTree tree;
 	auto store = std::make_shared<FailingStore>();
+	auto publisher = std::make_shared<RecordingPublisher>();
+
 	AgentOptions options;
 	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
 
-	AgentService service(options, store, nullptr);
+	AgentService service(options, store, publisher);
 
 	const auto result = service.handle(envelope(Commands::kDownloadVersion, R"({"release_id":"rel_1","artifacts":[]})"));
 
-	ASSERT_FALSE(result.has_value());
-	EXPECT_NE(result.error().find("must not be empty"), std::string::npos);
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(publisher->count(), 1);
+	EXPECT_NE(publisher->body().find("must not be empty"), std::string::npos) << publisher->body();
 	EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(tree.version_root()) / "rel_1"));
 }
 
@@ -304,15 +372,270 @@ TEST(AgentServiceTest, ReplyQueueUrlOverridesConfiguredResultQueue)
 	EXPECT_EQ(publisher->queue_url(), "https://sqs.example/from-envelope");
 }
 
-TEST(AgentServiceTest, DownloadVersionRequiresArtifactStore)
+TEST(AgentServiceTest, DownloadVersionConsumesWhenTheArtifactStoreIsMissing)
 {
 	TemporaryTree tree;
-	auto service = make_service(tree);
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher);
 
 	const auto result = service.handle(envelope(Commands::kDownloadVersion, R"({"release_id":"rel_1","artifacts":[]})"));
 
-	ASSERT_FALSE(result.has_value());
-	EXPECT_NE(result.error().find("artifact store"), std::string::npos);
+	ASSERT_TRUE(result.has_value());
+	EXPECT_NE(publisher->body().find("artifact store"), std::string::npos) << publisher->body();
+}
+
+TEST(AgentServiceTest, DownloadVersionKeepsTheVersionRootWhenReleaseIdIsAPathReference)
+{
+	TemporaryTree tree;
+	tree.make_version("keep_me");
+	const auto sibling = tree.make_sibling("neighbour");
+
+	auto store = std::make_shared<FailingStore>();
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, store, publisher);
+
+	const auto result = service.handle(envelope(Commands::kDownloadVersion, R"({"release_id":".","artifacts":[{"install_path":"app.exe","sha256":"deadbeef"}]})"));
+
+	ASSERT_TRUE(result.has_value());
+	EXPECT_NE(publisher->body().find("path reference"), std::string::npos) << publisher->body();
+	EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(tree.version_root()) / "keep_me" / "app.exe"));
+	EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(sibling) / "secret.txt"));
+}
+
+TEST(AgentServiceTest, DownloadVersionKeepsSiblingsWhenReleaseIdEscapesTheVersionRoot)
+{
+	TemporaryTree tree;
+	tree.make_version("keep_me");
+	const auto sibling = tree.make_sibling("neighbour");
+
+	auto store = std::make_shared<FailingStore>();
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, store, publisher);
+
+	const auto result
+		= service.handle(envelope(Commands::kDownloadVersion, R"({"release_id":"../neighbour","artifacts":[{"install_path":"app.exe","sha256":"deadbeef"}]})"));
+
+	ASSERT_TRUE(result.has_value());
+	EXPECT_NE(publisher->body().find("path separator"), std::string::npos) << publisher->body();
+	EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(sibling) / "secret.txt"));
+	EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(tree.version_root()) / "keep_me" / "app.exe"));
+}
+
+TEST(AgentServiceTest, DownloadVersionRejectsEveryReleaseIdThatIsNotASingleName)
+{
+	for (const auto* release_id : { "", ".", "..", "../neighbour", "a/b", "a\\\\b" })
+	{
+		TemporaryTree tree;
+		tree.make_version("keep_me");
+		const auto sibling = tree.make_sibling("neighbour");
+
+		auto store = std::make_shared<FailingStore>();
+		AgentOptions options;
+		options.version_root = tree.version_root();
+
+		AgentService service(options, store, nullptr);
+
+		const std::string payload = std::string(R"({"release_id":")") + release_id + R"(","artifacts":[{"install_path":"app.exe","sha256":"deadbeef"}]})";
+
+		const auto result = service.handle(envelope(Commands::kDownloadVersion, payload));
+
+		EXPECT_TRUE(result.has_value()) << release_id;
+		EXPECT_TRUE(std::filesystem::exists(tree.version_root())) << release_id;
+		EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(tree.version_root()) / "keep_me" / "app.exe")) << release_id;
+		EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(sibling) / "secret.txt")) << release_id;
+	}
+}
+
+TEST(AgentServiceTest, ApplyAndRollbackRejectAPathReferenceBeforeReachingTheEngine)
+{
+	TemporaryTree tree;
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	Install::InstallOptions install_options;
+	install_options.service_root = tree.service_root();
+
+	Deploy::ServiceSpec spec;
+	spec.executable = "app.exe";
+
+	auto engine = std::make_shared<Deploy::DeploymentEngine>(std::make_shared<Install::ReleaseInstaller>(install_options),
+															 std::make_shared<Process::PosixProcessSupervisor>(), spec, Health::HealthCheckSpec{});
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.service_root = tree.service_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher, engine);
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kApplyVersion, R"({"release_id":".."})")).has_value());
+	EXPECT_NE(publisher->body().find("path reference"), std::string::npos) << publisher->body();
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kRollbackVersion, R"({"release_id":".."})")).has_value());
+	EXPECT_NE(publisher->body().find("path reference"), std::string::npos) << publisher->body();
+
+	EXPECT_EQ(publisher->count(), 2);
+	EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(tree.service_root()) / "state.json"));
+}
+
+TEST(AgentServiceTest, MissingReleaseIdIsConsumedAndReported)
+{
+	TemporaryTree tree;
+	auto store = std::make_shared<FailingStore>();
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, store, publisher);
+
+	const auto result = service.handle(envelope(Commands::kDownloadVersion, R"({"artifacts":[{"install_path":"app.exe","sha256":"deadbeef"}]})"));
+
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(publisher->count(), 1);
+	EXPECT_NE(publisher->body().find("release_id"), std::string::npos) << publisher->body();
+	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
+}
+
+TEST(AgentServiceTest, InstallPathEscapeIsConsumedAndReported)
+{
+	TemporaryTree tree;
+	auto store = std::make_shared<FailingStore>();
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, store, publisher);
+
+	const auto result
+		= service.handle(envelope(Commands::kDownloadVersion, R"({"release_id":"rel_1","artifacts":[{"install_path":"../escape.exe","sha256":"deadbeef"}]})"));
+
+	ASSERT_TRUE(result.has_value());
+	EXPECT_NE(publisher->body().find("install_path"), std::string::npos) << publisher->body();
+	EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(tree.version_root()) / "rel_1"));
+}
+
+TEST(AgentServiceTest, Sha256MismatchIsConsumedAndReported)
+{
+	TemporaryTree tree;
+	auto store = std::make_shared<ContentStore>("payload");
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, store, publisher);
+
+	const auto result = service.handle(envelope(Commands::kDownloadVersion, R"({"release_id":"rel_1","artifacts":[{"install_path":"app.exe","sha256":"deadbeef"}]})"));
+
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(publisher->count(), 1);
+	EXPECT_NE(publisher->body().find("sha256 mismatch"), std::string::npos) << publisher->body();
+	EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(tree.version_root()) / "rel_1"));
+}
+
+TEST(AgentServiceTest, AbsentObjectIsConsumedWhenTheStoreConfirmsAbsence)
+{
+	TemporaryTree tree;
+	auto store = std::make_shared<MissingObjectStore>();
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, store, publisher);
+
+	const auto result = service.handle(envelope(Commands::kDownloadVersion, R"({"release_id":"rel_1","artifacts":[{"install_path":"app.exe","sha256":"deadbeef"}]})"));
+
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(publisher->count(), 1);
+	EXPECT_NE(publisher->body().find("does not exist in the store"), std::string::npos) << publisher->body();
+}
+
+TEST(AgentServiceTest, TransientFailureIsRetriedUntilTheAttemptLimit)
+{
+	TemporaryTree tree;
+	auto store = std::make_shared<FailingStore>();
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, store, publisher);
+
+	const auto raw = envelope(Commands::kDownloadVersion, R"({"release_id":"rel_2","artifacts":[{"install_path":"app.exe","sha256":"deadbeef"}]})");
+
+	for (uint32_t attempt = 1; attempt < kMaxTransientAttempts; ++attempt)
+	{
+		EXPECT_FALSE(service.handle(raw).has_value()) << attempt;
+	}
+
+	EXPECT_TRUE(service.handle(raw).has_value());
+	EXPECT_EQ(publisher->count(), static_cast<int>(kMaxTransientAttempts));
+}
+
+TEST(AgentServiceTest, AnotherMessageResetsTheAttemptCounter)
+{
+	TemporaryTree tree;
+	auto store = std::make_shared<FailingStore>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+
+	AgentService service(options, store, nullptr);
+
+	const auto first = envelope(Commands::kDownloadVersion, R"({"release_id":"rel_a","artifacts":[{"install_path":"app.exe","sha256":"deadbeef"}]})");
+	const auto second = envelope(Commands::kDownloadVersion, R"({"release_id":"rel_b","artifacts":[{"install_path":"app.exe","sha256":"deadbeef"}]})");
+
+	for (uint32_t attempt = 1; attempt < kMaxTransientAttempts; ++attempt)
+	{
+		EXPECT_FALSE(service.handle(first).has_value()) << attempt;
+	}
+
+	EXPECT_FALSE(service.handle(second).has_value());
+	EXPECT_FALSE(service.handle(first).has_value());
+}
+
+TEST(AgentServiceTest, PermanentFailureClearsTheAttemptCounter)
+{
+	TemporaryTree tree;
+	auto store = std::make_shared<FailingStore>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+
+	AgentService service(options, store, nullptr);
+
+	const auto broken = envelope(Commands::kDownloadVersion, R"({"release_id":"rel_1","artifacts":[]})");
+	const auto transient = envelope(Commands::kDownloadVersion, R"({"release_id":"rel_1","artifacts":[{"install_path":"app.exe","sha256":"deadbeef"}]})");
+
+	for (uint32_t attempt = 1; attempt < kMaxTransientAttempts; ++attempt)
+	{
+		EXPECT_FALSE(service.handle(transient).has_value()) << attempt;
+	}
+
+	EXPECT_TRUE(service.handle(broken).has_value());
+	EXPECT_FALSE(service.handle(transient).has_value());
 }
 
 TEST(AgentMessageTest, SerializeParseRoundTrip)
@@ -374,4 +697,100 @@ TEST(AgentServiceTest, SkipsReportWhenResultQueueIsNotConfigured)
 	ASSERT_TRUE(service.handle(envelope(Commands::kCurrentStatus)).has_value());
 
 	EXPECT_EQ(publisher->count(), 0);
+}
+
+TEST(AgentServiceTest, CommandForAnotherGroupIsRefusedAndConsumed)
+{
+	TemporaryTree tree;
+	tree.make_version("rel_1");
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.device_id = "pc-001";
+	options.group = "kiosk";
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher);
+
+	const auto result = service.handle(group_envelope(Commands::kCleanOldVersion, "warehouse"));
+
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(publisher->count(), 1);
+	EXPECT_NE(publisher->body().find("targets group 'warehouse'"), std::string::npos) << publisher->body();
+	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
+	EXPECT_TRUE(std::filesystem::exists(tree.version_root() + "/rel_1")) << "다른 그룹 명령이 실행되었다";
+}
+
+TEST(AgentServiceTest, CommandForTheOwnGroupRuns)
+{
+	TemporaryTree tree;
+	tree.make_version("rel_1");
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.device_id = "pc-001";
+	options.group = "kiosk";
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher);
+
+	ASSERT_TRUE(service.handle(group_envelope(Commands::kCleanOldVersion, "kiosk")).has_value());
+
+	EXPECT_NE(publisher->body().find("\"success\":true"), std::string::npos) << publisher->body();
+	EXPECT_FALSE(std::filesystem::exists(tree.version_root() + "/rel_1"));
+}
+
+TEST(AgentServiceTest, AnEnvelopeWithoutATargetGroupRunsOnEveryDevice)
+{
+	TemporaryTree tree;
+	tree.make_version("rel_1");
+
+	AgentOptions options;
+	options.device_id = "pc-001";
+	options.group = "kiosk";
+	options.version_root = tree.version_root();
+
+	AgentService service(options, nullptr, nullptr);
+
+	ASSERT_TRUE(service.handle(envelope(Commands::kCleanOldVersion)).has_value());
+	EXPECT_FALSE(std::filesystem::exists(tree.version_root() + "/rel_1"));
+}
+
+TEST(AgentMessageTest, TargetGroupSurvivesTheRoundTrip)
+{
+	AgentMessage message;
+	message.command = Commands::kApplyVersion;
+	message.payload = R"({"release_id":"rel_1"})";
+	message.target_group = "kiosk";
+
+	const auto restored = parse_agent_message(serialize_agent_message(message));
+
+	ASSERT_TRUE(restored.has_value()) << (restored.has_value() ? "" : restored.error());
+	EXPECT_EQ(restored.value().target_group, "kiosk");
+
+	message.target_group.clear();
+	EXPECT_EQ(serialize_agent_message(message).find("target_group"), std::string::npos);
+}
+
+TEST(AgentServiceTest, ADeviceWithoutAGroupRefusesAGroupTargetedCommand)
+{
+	TemporaryTree tree;
+	tree.make_version("rel_1");
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.device_id = "pc-001";
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher);
+
+	const auto result = service.handle(group_envelope(Commands::kCleanOldVersion, "kiosk"));
+
+	ASSERT_TRUE(result.has_value());
+	EXPECT_EQ(publisher->count(), 1);
+	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos) << publisher->body();
+	EXPECT_TRUE(std::filesystem::exists(tree.version_root() + "/rel_1"));
 }
