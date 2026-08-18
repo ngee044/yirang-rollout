@@ -2,10 +2,15 @@
 
 #include "HealthChecker.h"
 #include "NetworkProbe.h"
+#include "ProcessIdentity.h"
 #include "ProcessProbe.h"
+
+#include <boost/json.hpp>
 
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <sstream>
 #include <thread>
 
 namespace Deploy
@@ -141,10 +146,75 @@ namespace Deploy
 
 		if (current.value().active.empty())
 		{
-			return std::unexpected("no active release to start");
+			return std::unexpected(kNoActiveRelease);
+		}
+
+		auto resumed = resume(current.value().active);
+		if (!resumed)
+		{
+			return std::unexpected(resumed.error());
+		}
+
+		if (handle_ != std::nullopt)
+		{
+			return {};
 		}
 
 		return launch(current.value().active);
+	}
+
+	auto DeploymentEngine::resume(const std::string& release_id) -> std::expected<void, std::string>
+	{
+		auto recorded = record();
+		if (!recorded)
+		{
+			return std::unexpected(recorded.error());
+		}
+
+		if (recorded.value().process_id <= 0)
+		{
+			return {};
+		}
+
+		auto identity = Process::boot_identity();
+		if (!identity)
+		{
+			return std::unexpected(identity.error());
+		}
+
+		if (identity.value() != recorded.value().boot_identity)
+		{
+			last_detail_ = std::format("the recorded instance of '{}' belongs to an earlier boot", recorded.value().release_id);
+
+			return clear_record();
+		}
+
+		auto taken = supervisor_->adopt(Process::ProcessHandle{ recorded.value().process_id, recorded.value().start_token });
+		if (!taken)
+		{
+			last_detail_ = std::format("the recorded instance of '{}' is gone: {}", recorded.value().release_id, taken.error());
+
+			return clear_record();
+		}
+
+		handle_ = taken.value();
+
+		if (recorded.value().release_id == release_id)
+		{
+			last_detail_ = std::format("adopted the running instance of '{}' (pid {})", release_id, taken.value().id);
+
+			return {};
+		}
+
+		auto stopped = stop();
+		if (!stopped)
+		{
+			return std::unexpected(std::format("cannot stop the adopted instance of '{}': {}", recorded.value().release_id, stopped.error()));
+		}
+
+		last_detail_ = std::format("stopped the adopted instance of '{}' before starting '{}'", recorded.value().release_id, release_id);
+
+		return {};
 	}
 
 	auto DeploymentEngine::stop(void) -> std::expected<void, std::string>
@@ -155,14 +225,14 @@ namespace Deploy
 		}
 
 		auto stopped = supervisor_->stop(handle_.value(), service_.stop_timeout);
-		handle_ = std::nullopt;
-
 		if (!stopped)
 		{
 			return std::unexpected(stopped.error());
 		}
 
-		return {};
+		handle_ = std::nullopt;
+
+		return clear_record();
 	}
 
 	auto DeploymentEngine::launch(const std::string& release_id) -> std::expected<void, std::string>
@@ -200,6 +270,147 @@ namespace Deploy
 		}
 
 		handle_ = started.value();
+
+		auto identity = Process::boot_identity();
+		if (!identity)
+		{
+			return std::unexpected(identity.error());
+		}
+
+		RuntimeRecord next;
+		next.release_id = release_id;
+		next.process_id = started.value().id;
+		next.start_token = started.value().start_token;
+		next.boot_identity = identity.value();
+
+		auto written = write_record(next);
+		if (!written)
+		{
+			return std::unexpected(std::format("started '{}' but cannot record the running instance: {}", release_id, written.error()));
+		}
+
+		return {};
+	}
+
+	auto DeploymentEngine::record_path(void) const -> std::string { return (std::filesystem::path(installer_->options().service_root) / "runtime.json").string(); }
+
+	auto DeploymentEngine::record(void) -> std::expected<RuntimeRecord, std::string>
+	{
+		std::error_code error;
+		if (!std::filesystem::exists(record_path(), error))
+		{
+			return RuntimeRecord{};
+		}
+
+		std::ifstream source(record_path(), std::ios::binary);
+		if (!source.is_open())
+		{
+			return std::unexpected(std::format("cannot open '{}'", record_path()));
+		}
+
+		std::ostringstream buffer;
+		buffer << source.rdbuf();
+		source.close();
+
+		boost::json::value parsed;
+		try
+		{
+			parsed = boost::json::parse(buffer.str());
+		}
+		catch (const std::exception& exception)
+		{
+			return unreadable_record(std::format("cannot parse '{}': {}", record_path(), exception.what()));
+		}
+
+		if (!parsed.is_object())
+		{
+			return unreadable_record(std::format("'{}' root is not a JSON object", record_path()));
+		}
+
+		const auto root = parsed.as_object();
+
+		RuntimeRecord loaded;
+		if (root.contains("release_id") && root.at("release_id").is_string())
+		{
+			loaded.release_id = root.at("release_id").as_string().c_str();
+		}
+
+		if (root.contains("process_id") && root.at("process_id").is_int64())
+		{
+			loaded.process_id = root.at("process_id").as_int64();
+		}
+
+		if (root.contains("start_token") && root.at("start_token").is_int64())
+		{
+			loaded.start_token = static_cast<uint64_t>(root.at("start_token").as_int64());
+		}
+
+		if (root.contains("boot_identity") && root.at("boot_identity").is_string())
+		{
+			loaded.boot_identity = root.at("boot_identity").as_string().c_str();
+		}
+
+		return loaded;
+	}
+
+	auto DeploymentEngine::unreadable_record(const std::string& reason) -> std::expected<RuntimeRecord, std::string>
+	{
+		last_detail_ = reason;
+
+		auto cleared = clear_record();
+		if (!cleared)
+		{
+			return std::unexpected(std::format("{} and {}", reason, cleared.error()));
+		}
+
+		return RuntimeRecord{};
+	}
+
+	auto DeploymentEngine::write_record(const RuntimeRecord& next) const -> std::expected<void, std::string>
+	{
+		boost::json::object root;
+		root["release_id"] = next.release_id;
+		root["process_id"] = next.process_id;
+		root["start_token"] = static_cast<int64_t>(next.start_token);
+		root["boot_identity"] = next.boot_identity;
+
+		const auto temporary = record_path() + ".tmp";
+		{
+			std::ofstream sink(temporary, std::ios::binary | std::ios::trunc);
+			if (!sink.is_open())
+			{
+				return std::unexpected(std::format("cannot write '{}'", temporary));
+			}
+
+			sink << boost::json::serialize(root);
+			sink.flush();
+			if (!sink.good())
+			{
+				return std::unexpected(std::format("cannot write '{}'", temporary));
+			}
+		}
+
+		std::error_code error;
+		std::filesystem::rename(temporary, record_path(), error);
+		if (error)
+		{
+			std::error_code ignored;
+			std::filesystem::remove(temporary, ignored);
+
+			return std::unexpected(std::format("cannot publish '{}': {}", record_path(), error.message()));
+		}
+
+		return {};
+	}
+
+	auto DeploymentEngine::clear_record(void) const -> std::expected<void, std::string>
+	{
+		std::error_code error;
+		std::filesystem::remove(record_path(), error);
+		if (error)
+		{
+			return std::unexpected(std::format("cannot remove '{}': {}", record_path(), error.message()));
+		}
 
 		return {};
 	}

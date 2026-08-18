@@ -38,6 +38,7 @@ namespace DeployCli
 		auto s3_region(void) const -> std::string;
 
 		auto s3_endpoint(void) const -> std::string;
+		auto allow_insecure_tls(void) const -> bool;
 
 		auto log_root_path(void) const -> std::string;
 		auto write_console_log(void) const -> Utilities::LogTypes;
@@ -46,6 +47,7 @@ namespace DeployCli
 
 		auto show_help(void) const -> bool;
 		auto show_version(void) const -> bool;
+		auto confirm_token(void) const -> std::string;
 
 	private:
 		auto load(void) -> void;
@@ -67,6 +69,7 @@ namespace DeployCli
 		std::string s3_bucket_;
 		std::string s3_region_;
 		std::string s3_endpoint_;
+		bool allow_insecure_tls_;
 
 		std::string log_root_path_;
 		int write_console_log_;
@@ -75,6 +78,7 @@ namespace DeployCli
 
 		bool show_help_;
 		bool show_version_;
+		std::string confirm_token_;
 
 		std::optional<std::string> load_warning_;
 	};

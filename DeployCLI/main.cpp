@@ -1,5 +1,6 @@
 #include "Commands.h"
 #include "Configurations.h"
+#include "Confirmation.h"
 #include "RestClient.h"
 
 #include "ArgumentParser.h"
@@ -35,6 +36,7 @@ namespace
 					 "  command <name> [release_id]      Agent 명령을 발행한다\n"
 					 "                                   download_version | apply_version | current_status\n"
 					 "                                   clean_old_version | rollback_version\n"
+					 "                                   clean_old_version 은 확인이 필요하다 (--confirm clean_old_version)\n"
 					 "  results                          디바이스가 보고한 결과를 조회한다\n"
 					 "\n"
 					 "connection:\n"
@@ -48,7 +50,8 @@ namespace
 					 "  --target_group <name>            대상 그룹 (비우면 등록된 전체 큐)\n"
 					 "  --s3_bucket <name>               업로드 버킷 (deploy 필수)\n"
 					 "  --s3_region <region>             버킷 리전 (기본 us-east-1)\n"
-					 "  --s3_endpoint <url>              MinIO·LocalStack 등 호환 저장소\n"
+					 "  --s3_endpoint <url>              MinIO·LocalStack 등 호환 저장소 (스킴 생략 시 https)\n"
+					 "  --allow_insecure_tls <bool>      저장소 TLS 검증 해제 (기본 false, 신뢰된 사설망 전용)\n"
 					 "\n"
 					 "common:\n"
 					 "  --config_path <path>             설정 파일 경로 (기본 yirang_deploy_configurations.json)\n"
@@ -56,6 +59,7 @@ namespace
 					 "  --write_console_log <0-8>        콘솔 로그 레벨 (0=None 2=Error 3=Warning 4=Information)\n"
 					 "  --write_file_log <0-8>           파일 로그 레벨\n"
 					 "  --write_interval <ms>            로그 기록 주기\n"
+					 "  --confirm <command>              파괴적 명령 승인 (비대화형에서 필수, 대화형이면 확인 입력으로 대체)\n"
 					 "  --help                           도움말\n"
 					 "  --version                        버전\n";
 		std::cout.flush();
@@ -91,6 +95,7 @@ namespace
 		options.bucket = configurations.s3_bucket();
 		options.region = configurations.s3_region();
 		options.endpoint = configurations.s3_endpoint();
+		options.allow_insecure_tls = configurations.allow_insecure_tls();
 
 		return options;
 	}
@@ -138,7 +143,9 @@ auto main(int32_t argc, char* argv[]) -> int32_t
 			auto client = std::make_shared<RestClient>(configurations.control_plane_url(), configurations.api_token(),
 													   std::chrono::seconds(configurations.request_timeout_seconds()));
 
-			Commands commands(configurations, store, client);
+			auto confirmation = std::make_shared<Confirmation>(configurations.confirm_token(), standard_input_is_interactive(), std::cin, std::cout);
+
+			Commands commands(configurations, store, client, confirmation);
 
 			const auto name = positional.front();
 			const std::vector<std::string> arguments(positional.begin() + 1, positional.end());

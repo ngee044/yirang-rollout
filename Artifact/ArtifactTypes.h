@@ -15,6 +15,8 @@ namespace Artifact
 
 		std::string endpoint;
 
+		bool allow_insecure_tls{ false };
+
 		std::chrono::seconds presigned_url_expiration{ 3600 };
 	};
 }

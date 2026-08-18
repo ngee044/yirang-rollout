@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Configurations.h"
+#include "Confirmation.h"
 #include "IArtifactStore.h"
 #include "ReleaseTypes.h"
 #include "RestClient.h"
@@ -17,7 +18,10 @@ namespace DeployCli
 	class Commands
 	{
 	public:
-		Commands(const Configurations& configurations, std::shared_ptr<Artifact::IArtifactStore> store, std::shared_ptr<RestClient> client);
+		Commands(const Configurations& configurations,
+				 std::shared_ptr<Artifact::IArtifactStore> store,
+				 std::shared_ptr<RestClient> client,
+				 std::shared_ptr<Confirmation> confirmation = nullptr);
 
 		auto run(const std::string& name, const std::vector<std::string>& arguments) -> std::expected<void, std::string>;
 
@@ -39,6 +43,7 @@ namespace DeployCli
 		const Configurations& configurations_;
 		std::shared_ptr<Artifact::IArtifactStore> store_;
 		std::shared_ptr<RestClient> client_;
+		std::shared_ptr<Confirmation> confirmation_;
 
 		std::map<std::string, std::function<std::expected<void, std::string>(const std::vector<std::string>&)>> handlers_;
 
