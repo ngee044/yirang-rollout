@@ -40,6 +40,7 @@ namespace
 		options.bucket = configurations.s3_bucket();
 		options.region = configurations.s3_region();
 		options.endpoint = configurations.s3_endpoint();
+		options.allow_insecure_tls = configurations.allow_insecure_tls();
 
 		return options;
 	}
@@ -50,6 +51,7 @@ namespace
 		options.queue_url = configurations.queue_url();
 		options.region = configurations.s3_region();
 		options.endpoint = configurations.s3_endpoint();
+		options.allow_insecure_tls = configurations.allow_insecure_tls();
 		options.wait_time_seconds = configurations.poll_wait_seconds();
 
 		return options;
@@ -157,7 +159,15 @@ auto main(int32_t argc, char* argv[]) -> int32_t
 			auto resumed = engine->start_active();
 			if (resumed)
 			{
-				Logger::handle().write(LogTypes::Information, "restarted the active release from state.json");
+				Logger::handle().write(LogTypes::Information, std::format("resumed the active release: {}", engine->last_detail()));
+			}
+			else if (resumed.error() == Deploy::kNoActiveRelease)
+			{
+				Logger::handle().write(LogTypes::Information, "no release is active yet — waiting for a deployment command");
+			}
+			else
+			{
+				Logger::handle().write(LogTypes::Error, std::format("cannot resume the active release: {}", resumed.error()));
 			}
 		}
 

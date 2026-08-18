@@ -7,6 +7,7 @@
 #include "IArtifactStore.h"
 #include "IMessagePublisher.h"
 
+#include <cstdint>
 #include <expected>
 #include <functional>
 #include <map>
@@ -16,6 +17,8 @@
 
 namespace YirangAgent
 {
+	inline constexpr uint32_t kMaxTransientAttempts = 5;
+
 	struct AgentOptions
 	{
 		std::string device_id;
@@ -53,6 +56,11 @@ namespace YirangAgent
 
 		auto report(const std::string& command, const std::string& reply_queue_url, const std::expected<void, std::string>& outcome) -> void;
 
+		auto permanent(const std::string& reason) -> std::unexpected<std::string>;
+
+		auto record_failure(const std::string& raw_message) -> uint32_t;
+		auto forget_failure(void) -> void;
+
 		AgentOptions options_;
 		std::shared_ptr<Artifact::IArtifactStore> store_;
 		std::shared_ptr<Messaging::IMessagePublisher> publisher_;
@@ -61,5 +69,10 @@ namespace YirangAgent
 		std::map<std::string, std::function<std::expected<void, std::string>(const std::string&)>> messages_;
 
 		std::string last_report_;
+
+		bool failure_is_permanent_;
+
+		std::string failing_message_;
+		uint32_t failing_attempts_;
 	};
 }

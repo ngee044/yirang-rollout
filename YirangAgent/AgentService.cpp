@@ -46,6 +46,23 @@ namespace YirangAgent
 			return parsed.as_object();
 		}
 
+		auto validated_release_id(const boost::json::object& object) -> std::expected<std::string, std::string>
+		{
+			auto release_id = read_string(object, "release_id");
+			if (!release_id)
+			{
+				return std::unexpected(release_id.error());
+			}
+
+			auto valid = Artifact::validate_release_id(release_id.value());
+			if (!valid)
+			{
+				return std::unexpected(valid.error());
+			}
+
+			return release_id.value();
+		}
+
 		class PartialDownloadGuard
 		{
 		public:
@@ -71,15 +88,21 @@ namespace YirangAgent
 			std::string directory_;
 			bool keep_;
 		};
-
-		auto retry_is_pointless(const std::string& command) -> bool { return command == Commands::kApplyVersion || command == Commands::kRollbackVersion; }
 	}
 
 	AgentService::AgentService(const AgentOptions& options,
 							   std::shared_ptr<Artifact::IArtifactStore> store,
 							   std::shared_ptr<Messaging::IMessagePublisher> publisher,
 							   std::shared_ptr<Deploy::DeploymentEngine> engine)
-		: options_(options), store_(std::move(store)), publisher_(std::move(publisher)), engine_(std::move(engine)), messages_(), last_report_()
+		: options_(options)
+		, store_(std::move(store))
+		, publisher_(std::move(publisher))
+		, engine_(std::move(engine))
+		, messages_()
+		, last_report_()
+		, failure_is_permanent_(false)
+		, failing_message_()
+		, failing_attempts_(0)
 	{
 		messages_.insert({ Commands::kDownloadVersion, std::bind(&AgentService::download_version, this, std::placeholders::_1) });
 		messages_.insert({ Commands::kApplyVersion, std::bind(&AgentService::apply_version, this, std::placeholders::_1) });
@@ -103,6 +126,32 @@ namespace YirangAgent
 
 	auto AgentService::last_report(void) const -> std::string { return last_report_; }
 
+	auto AgentService::permanent(const std::string& reason) -> std::unexpected<std::string>
+	{
+		failure_is_permanent_ = true;
+
+		return std::unexpected(reason);
+	}
+
+	auto AgentService::record_failure(const std::string& raw_message) -> uint32_t
+	{
+		if (failing_message_ != raw_message)
+		{
+			failing_message_ = raw_message;
+			failing_attempts_ = 0;
+		}
+
+		++failing_attempts_;
+
+		return failing_attempts_;
+	}
+
+	auto AgentService::forget_failure(void) -> void
+	{
+		failing_message_.clear();
+		failing_attempts_ = 0;
+	}
+
 	auto AgentService::handle(const std::string& raw_message) -> std::expected<void, std::string>
 	{
 		auto parsed = parse_agent_message(raw_message);
@@ -110,27 +159,59 @@ namespace YirangAgent
 		{
 			Logger::handle().write(LogTypes::Error, std::format("cannot parse agent message: {}", parsed.error()));
 			report(std::string(), std::string(), std::expected<void, std::string>(std::unexpect, parsed.error()));
+			forget_failure();
 
 			return {};
 		}
 
 		const auto& message = parsed.value();
 
+		if (!message.target_group.empty() && message.target_group != options_.group)
+		{
+			const auto reason = std::format("command '{}' targets group '{}' but this device is in group '{}'", message.command, message.target_group, options_.group);
+
+			Logger::handle().write(LogTypes::Error, reason);
+			report(message.command, message.reply_queue_url, std::expected<void, std::string>(std::unexpect, reason));
+			forget_failure();
+
+			return {};
+		}
+
 		auto iter = messages_.find(message.command);
 		if (iter == messages_.end())
 		{
 			Logger::handle().write(LogTypes::Error, std::format("command is not found: {}", message.command));
 			report(message.command, message.reply_queue_url, std::expected<void, std::string>(std::unexpect, std::format("command is not found: {}", message.command)));
+			forget_failure();
 
 			return {};
 		}
 
+		failure_is_permanent_ = false;
+
 		auto outcome = iter->second(message.payload);
 		report(message.command, message.reply_queue_url, outcome);
 
-		if (!outcome && retry_is_pointless(message.command))
+		if (outcome)
 		{
-			Logger::handle().write(LogTypes::Error, std::format("'{}' failed and will not be retried: {}", message.command, outcome.error()));
+			forget_failure();
+
+			return {};
+		}
+
+		if (failure_is_permanent_)
+		{
+			Logger::handle().write(LogTypes::Error, std::format("'{}' failed permanently and will not be retried: {}", message.command, outcome.error()));
+			forget_failure();
+
+			return {};
+		}
+
+		const auto attempts = record_failure(raw_message);
+		if (attempts >= kMaxTransientAttempts)
+		{
+			Logger::handle().write(LogTypes::Error, std::format("'{}' failed {} times in a row and will not be retried: {}", message.command, attempts, outcome.error()));
+			forget_failure();
 
 			return {};
 		}
@@ -170,34 +251,34 @@ namespace YirangAgent
 	{
 		if (store_ == nullptr)
 		{
-			return std::unexpected("artifact store is not configured");
+			return permanent("artifact store is not configured");
 		}
 
 		if (options_.version_root.empty())
 		{
-			return std::unexpected("version_root is not configured");
+			return permanent("version_root is not configured");
 		}
 
 		auto object = parse_object(message);
 		if (!object)
 		{
-			return std::unexpected(object.error());
+			return permanent(object.error());
 		}
 
-		auto release_id = read_string(object.value(), "release_id");
+		auto release_id = validated_release_id(object.value());
 		if (!release_id)
 		{
-			return std::unexpected(release_id.error());
+			return permanent(release_id.error());
 		}
 
 		if (!object.value().contains("artifacts") || !object.value().at("artifacts").is_array())
 		{
-			return std::unexpected("payload field 'artifacts' is missing or not an array");
+			return permanent("payload field 'artifacts' is missing or not an array");
 		}
 
 		if (object.value().at("artifacts").as_array().empty())
 		{
-			return std::unexpected("payload field 'artifacts' must not be empty");
+			return permanent("payload field 'artifacts' must not be empty");
 		}
 
 		const auto target = version_directory(release_id.value());
@@ -215,7 +296,7 @@ namespace YirangAgent
 		{
 			if (!element.is_object())
 			{
-				return std::unexpected("artifact entry is not an object");
+				return permanent("artifact entry is not an object");
 			}
 
 			const auto entry = element.as_object();
@@ -223,19 +304,19 @@ namespace YirangAgent
 			auto install_path = read_string(entry, "install_path");
 			if (!install_path)
 			{
-				return std::unexpected(install_path.error());
+				return permanent(install_path.error());
 			}
 
 			auto sha256 = read_string(entry, "sha256");
 			if (!sha256)
 			{
-				return std::unexpected(sha256.error());
+				return permanent(sha256.error());
 			}
 
 			auto key = Artifact::make_object_key(release_id.value(), install_path.value());
 			if (!key)
 			{
-				return std::unexpected(key.error());
+				return permanent(key.error());
 			}
 
 			const auto destination = (std::filesystem::path(target) / install_path.value()).string();
@@ -243,6 +324,12 @@ namespace YirangAgent
 			auto downloaded = store_->download(key.value(), destination);
 			if (!downloaded)
 			{
+				auto present = store_->exists(key.value());
+				if (present && !present.value())
+				{
+					return permanent(std::format("artifact '{}' does not exist in the store", key.value()));
+				}
+
 				return std::unexpected(downloaded.error());
 			}
 
@@ -254,7 +341,7 @@ namespace YirangAgent
 
 			if (actual.value() != sha256.value())
 			{
-				return std::unexpected(std::format("sha256 mismatch for '{}': expected {}, got {}", install_path.value(), sha256.value(), actual.value()));
+				return permanent(std::format("sha256 mismatch for '{}': expected {}, got {}", install_path.value(), sha256.value(), actual.value()));
 			}
 		}
 
@@ -272,7 +359,7 @@ namespace YirangAgent
 
 		if (options_.version_root.empty())
 		{
-			return std::unexpected("version_root is not configured");
+			return permanent("version_root is not configured");
 		}
 
 		std::error_code error;
@@ -290,7 +377,7 @@ namespace YirangAgent
 
 			if (version_root == service_root)
 			{
-				return std::unexpected("version_root must not be the same as service_root");
+				return permanent("version_root must not be the same as service_root");
 			}
 		}
 
@@ -394,18 +481,18 @@ namespace YirangAgent
 		auto object = parse_object(message);
 		if (!object)
 		{
-			return std::unexpected(object.error());
+			return permanent(object.error());
 		}
 
-		auto release_id = read_string(object.value(), "release_id");
+		auto release_id = validated_release_id(object.value());
 		if (!release_id)
 		{
-			return std::unexpected(release_id.error());
+			return permanent(release_id.error());
 		}
 
 		if (engine_ == nullptr)
 		{
-			return std::unexpected("deployment engine is not configured (service_root or service.executable is missing)");
+			return permanent("deployment engine is not configured (service_root or service.executable is missing)");
 		}
 
 		const auto source = version_directory(release_id.value());
@@ -413,13 +500,13 @@ namespace YirangAgent
 		std::error_code error;
 		if (!std::filesystem::is_directory(source, error))
 		{
-			return std::unexpected(std::format("version '{}' is not downloaded (expected '{}')", release_id.value(), source));
+			return permanent(std::format("version '{}' is not downloaded (expected '{}')", release_id.value(), source));
 		}
 
 		auto applied = engine_->apply(release_id.value(), source);
 		if (!applied)
 		{
-			return std::unexpected(applied.error());
+			return permanent(applied.error());
 		}
 
 		last_report_ = engine_->last_detail();
@@ -433,24 +520,24 @@ namespace YirangAgent
 		auto object = parse_object(message);
 		if (!object)
 		{
-			return std::unexpected(object.error());
+			return permanent(object.error());
 		}
 
-		auto release_id = read_string(object.value(), "release_id");
+		auto release_id = validated_release_id(object.value());
 		if (!release_id)
 		{
-			return std::unexpected(release_id.error());
+			return permanent(release_id.error());
 		}
 
 		if (engine_ == nullptr)
 		{
-			return std::unexpected("deployment engine is not configured (service_root or service.executable is missing)");
+			return permanent("deployment engine is not configured (service_root or service.executable is missing)");
 		}
 
 		auto reverted = engine_->rollback_to(release_id.value());
 		if (!reverted)
 		{
-			return std::unexpected(reverted.error());
+			return permanent(reverted.error());
 		}
 
 		last_report_ = engine_->last_detail();

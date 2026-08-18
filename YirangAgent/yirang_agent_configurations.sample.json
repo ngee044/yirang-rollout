@@ -19,6 +19,7 @@
 	"s3_bucket": "yirang-releases",
 	"s3_region": "ap-northeast-2",
 	"s3_endpoint": "",
+	"allow_insecure_tls": false,
 	"service": {
 		"executable": "app.exe",
 		"arguments": [],

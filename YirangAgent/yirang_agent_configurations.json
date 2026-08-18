@@ -19,6 +19,7 @@
 	"s3_bucket": "",
 	"s3_region": "us-east-1",
 	"s3_endpoint": "",
+	"allow_insecure_tls": false,
 	"service": {
 		"executable": "",
 		"arguments": [],
