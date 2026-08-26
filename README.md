@@ -372,12 +372,17 @@ S3·SQS 통합 테스트 2건은 환경변수(`YIRANG_TEST_S3_ENDPOINT` 등)가 
 
 ```bash
 ./tests/e2e/run_integration.sh            # 스택 기동 → 환경변수 주입 → ctest 172건 (건너뜀 0)
+./tests/e2e/run_scenarios.sh              # 배포·교체·자동 롤백·수동 롤백 시나리오 4건
 ./tests/e2e/stack.sh down                 # 스택 정리
 ```
 
+`run_scenarios.sh` 는 실제 산출물(`build/out/yirang`·`yirang-agent`)과 `RestAPI` 를 띄워 **업로드 → REST 발행 → SQS 소비 → S3 다운로드·SHA-256 검증 → 설치 → 중단·교체·재시작 → 헬스체크 → 자동/수동 롤백**까지 사람 개입 없이 재현하고 판정합니다.
+
+> **`tests/e2e/agent_endpoint_mux.py` 가 있는 이유** — Agent 는 SQS 엔드포인트와 리전을 `s3_endpoint`·`s3_region` 설정에서 그대로 가져옵니다(`YirangAgent/main.cpp` `make_queue_options`). 큐 전용 엔드포인트 설정 필드가 없어서, **S3 호환 저장소와 SQS 호환 큐가 서로 다른 호스트에 있으면 한 Agent 가 둘 다 쓸 수 없습니다.** 실 AWS(양쪽 기본값)에서는 드러나지 않지만 R2 + ElasticMQ 같은 조합이 정확히 이 경우이고, SQS 수신 오류는 로그에도 남지 않습니다. 이 프록시는 `x-amz-target` 헤더 유무로 두 상류를 한 포트에 합쳐 주는 **테스트 전용 임시 우회**이며, 설정 필드가 분리되면 삭제됩니다. 루프백에만 바인딩하고 상류 주소는 상수입니다.
+
 ## 진행 상황
 
-배포 경로 **14단계가 전부 돕니다.** v1 배포·적용 → v2 교체 → 수동 롤백 → 자동 롤백까지 실측했습니다(2026-08-09 수동 실행). 이 시나리오의 자동 재현은 `tests/e2e/`에서 단계적으로 갖추는 중입니다.
+배포 경로 **14단계가 전부 돕니다.** v1 배포·적용 → v2 교체 → 수동 롤백 → 자동 롤백까지 실측했습니다(2026-08-09 수동 실행). 이 시나리오는 `./tests/e2e/run_scenarios.sh` 로 **자동 재현**됩니다(2026-08-26 실측 4건 통과).
 
 ```mermaid
 flowchart LR

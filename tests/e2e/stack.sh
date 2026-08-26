@@ -95,13 +95,25 @@ provision() {
 }
 
 env_exports() {
-	local integration
+	local integration pc001 pc002 results dead
 	integration="$(queue_url "$INTEGRATION_QUEUE" || true)"
+	pc001="$(queue_url "${DEVICE_QUEUES[0]}" || true)"
+	pc002="$(queue_url "${DEVICE_QUEUES[1]}" || true)"
+	results="$(queue_url "$RESULT_QUEUE" || true)"
+	dead="$(queue_url "$DEAD_LETTER_QUEUE" || true)"
 
-	if [ -z "$integration" ]; then
+	if [ -z "$integration" ] || [ -z "$pc001" ] || [ -z "$pc002" ] || [ -z "$results" ] || [ -z "$dead" ]; then
 		echo "[stack.sh] 큐 URL 을 읽지 못했습니다. tests/e2e/stack.sh up 을 먼저 실행하십시오." >&2
 		return 1
 	fi
+
+	echo "export YIRANG_E2E_S3_ENDPOINT='$S3_ENDPOINT'"
+	echo "export YIRANG_E2E_SQS_ENDPOINT='$SQS_ENDPOINT'"
+	echo "export YIRANG_E2E_BUCKET='$BUCKET'"
+	echo "export YIRANG_E2E_QUEUE_PC001='$pc001'"
+	echo "export YIRANG_E2E_QUEUE_PC002='$pc002'"
+	echo "export YIRANG_E2E_QUEUE_RESULTS='$results'"
+	echo "export YIRANG_E2E_QUEUE_DEAD_LETTERS='$dead'"
 
 	echo "export YIRANG_TEST_S3_ENDPOINT='$S3_ENDPOINT'"
 	echo "export YIRANG_TEST_S3_BUCKET='$BUCKET'"
