@@ -224,7 +224,7 @@ TEST(ArtifactStoreIntegrationTest, RoundTripPreservesContent)
 {
 	if (environment("YIRANG_TEST_S3_ENDPOINT").empty())
 	{
-		GTEST_SKIP() << "YIRANG_TEST_S3_ENDPOINT 가 없어 건너뜁니다 (LocalStack/MinIO 필요)";
+		GTEST_SKIP() << "YIRANG_TEST_S3_ENDPOINT 가 없어 건너뜁니다 (tests/e2e/run_integration.sh 로 실행)";
 	}
 
 	TemporaryTree tree;

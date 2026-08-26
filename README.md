@@ -358,8 +358,8 @@ Windows multi-config 생성기에서는 `build\out\<Config>\`, `build\lib\<Confi
 ## 테스트
 
 ```bash
-cd build && ctest --output-on-failure      # C++ 108건
-cd RestAPI && go test -race ./...          # Go 95건
+cd build && ctest --output-on-failure      # C++ 172건
+cd RestAPI && go test -race ./...          # Go 4패키지 53건
 ```
 
 Windows(multi-config 생성기)에서는 config를 명시합니다.
@@ -368,11 +368,16 @@ Windows(multi-config 생성기)에서는 config를 명시합니다.
 cd build && ctest -C Release --output-on-failure
 ```
 
-S3·SQS 통합 테스트 2건은 LocalStack 환경변수(`YIRANG_TEST_S3_ENDPOINT` 등)가 없으면 건너뜁니다.
+S3·SQS 통합 테스트 2건은 환경변수(`YIRANG_TEST_S3_ENDPOINT` 등)가 없으면 건너뜁니다. E2E 스택(SeaweedFS + ElasticMQ)을 띄우고 두 건까지 실행하려면:
+
+```bash
+./tests/e2e/run_integration.sh            # 스택 기동 → 환경변수 주입 → ctest 172건 (건너뜀 0)
+./tests/e2e/stack.sh down                 # 스택 정리
+```
 
 ## 진행 상황
 
-배포 경로 **14단계가 전부 돕니다.** LocalStack 으로 v1 배포·적용 → v2 교체 → 수동 롤백 → 자동 롤백까지 실측했습니다.
+배포 경로 **14단계가 전부 돕니다.** v1 배포·적용 → v2 교체 → 수동 롤백 → 자동 롤백까지 실측했습니다(2026-08-09 수동 실행). 이 시나리오의 자동 재현은 `tests/e2e/`에서 단계적으로 갖추는 중입니다.
 
 ```mermaid
 flowchart LR

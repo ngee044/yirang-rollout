@@ -109,7 +109,7 @@ TEST(MessagingIntegrationTest, PublishedMessageReachesConsumer)
 
 	if (endpoint.empty() || queue_url.empty())
 	{
-		GTEST_SKIP() << "YIRANG_TEST_SQS_ENDPOINT / YIRANG_TEST_SQS_QUEUE_URL 이 없어 건너뜁니다 (LocalStack 필요)";
+		GTEST_SKIP() << "YIRANG_TEST_SQS_ENDPOINT / YIRANG_TEST_SQS_QUEUE_URL 이 없어 건너뜁니다 (tests/e2e/run_integration.sh 로 실행)";
 	}
 
 	QueueOptions options;
