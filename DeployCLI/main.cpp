@@ -143,7 +143,7 @@ auto main(int32_t argc, char* argv[]) -> int32_t
 			auto client = std::make_shared<RestClient>(configurations.control_plane_url(), configurations.api_token(),
 													   std::chrono::seconds(configurations.request_timeout_seconds()));
 
-			auto confirmation = std::make_shared<Confirmation>(configurations.confirm_token(), standard_input_is_interactive(), std::cin, std::cout);
+			auto confirmation = std::make_shared<Confirmation>(configurations.confirm_token(), standard_input_is_interactive(), std::cin, std::cerr);
 
 			Commands commands(configurations, store, client, confirmation);
 

@@ -385,9 +385,16 @@ namespace Process
 		if (::kill(static_cast<pid_t>(id), 0) == 0 || errno == EPERM)
 		{
 			auto token = start_token(id);
-			if (token && token.value() == handle.start_token)
+			if (token)
 			{
-				return ProcessStatus{ ProcessState::Running, std::nullopt, std::nullopt };
+				if (token.value() == handle.start_token)
+				{
+					return ProcessStatus{ ProcessState::Running, std::nullopt, std::nullopt };
+				}
+			}
+			else if (::kill(static_cast<pid_t>(id), 0) == 0 || errno == EPERM)
+			{
+				return std::unexpected(token.error());
 			}
 		}
 		else if (errno != ESRCH)

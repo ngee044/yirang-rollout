@@ -88,16 +88,20 @@ namespace Process
 	auto boot_identity(void) -> std::expected<std::string, std::string>
 	{
 #if defined(__APPLE__)
-		int selector[2] = { CTL_KERN, KERN_BOOTTIME };
-		timeval booted{};
-		size_t length = sizeof(booted);
+		char identity[64]{};
+		size_t length = sizeof(identity);
 
-		if (::sysctl(selector, 2, &booted, &length, nullptr, 0) != 0)
+		if (::sysctlbyname("kern.bootsessionuuid", identity, &length, nullptr, 0) != 0)
 		{
-			return std::unexpected(std::format("cannot read the boot time: {}", std::strerror(errno)));
+			return std::unexpected(std::format("cannot read the boot session uuid: {}", std::strerror(errno)));
 		}
 
-		return std::format("{}.{:06}", static_cast<int64_t>(booted.tv_sec), static_cast<int64_t>(booted.tv_usec));
+		if (identity[0] == '\0')
+		{
+			return std::unexpected("the boot session uuid is empty");
+		}
+
+		return std::string(identity);
 #else
 		std::ifstream source("/proc/sys/kernel/random/boot_id");
 		if (!source.is_open())

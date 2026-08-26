@@ -4,6 +4,7 @@
 #include "ProcessIdentity.h"
 
 #include <chrono>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -12,6 +13,7 @@
 #include <random>
 
 #include <unistd.h>
+#include <sys/wait.h>
 
 using namespace Process;
 
@@ -279,6 +281,70 @@ TEST(ProcessSupervisorTest, AdoptedProcessIsReportedRunningAndCanBeStopped)
 	const auto after = successor.status(taken.value());
 	ASSERT_TRUE(after.has_value());
 	EXPECT_NE(after.value().state, ProcessState::Running);
+}
+
+TEST(ProcessSupervisorTest, AdoptsAndStopsAProcessItDidNotStart)
+{
+	const TemporaryDirectory directory;
+
+	int channel[2] = { -1, -1 };
+	ASSERT_EQ(::pipe(channel), 0);
+
+	const auto command = "cd '" + directory.path().string() + "' && trap '' TERM; : > ready; while :; do sleep 0.2; done";
+
+	const pid_t intermediate = ::fork();
+	ASSERT_GE(intermediate, 0);
+
+	if (intermediate == 0)
+	{
+		const pid_t forked = ::fork();
+		if (forked == 0)
+		{
+			::setsid();
+			::execl(kShell, "sh", "-c", command.c_str(), static_cast<char*>(nullptr));
+			::_exit(127);
+		}
+
+		(void)::write(channel[1], &forked, sizeof(forked));
+		::_exit(forked > 0 ? 0 : 1);
+	}
+
+	::close(channel[1]);
+
+	pid_t orphan = -1;
+	const auto received = ::read(channel[0], &orphan, sizeof(orphan));
+	::close(channel[0]);
+
+	int reaped = 0;
+	ASSERT_EQ(::waitpid(intermediate, &reaped, 0), intermediate);
+	ASSERT_EQ(received, static_cast<ssize_t>(sizeof(orphan)));
+	ASSERT_GT(orphan, 0);
+
+	struct OrphanGuard
+	{
+		pid_t id;
+		~OrphanGuard() { ::kill(-id, SIGKILL); }
+	} guard{ orphan };
+
+	ASSERT_TRUE(directory.wait_for("ready", std::chrono::seconds(5)));
+
+	auto token = start_token(static_cast<int64_t>(orphan));
+	ASSERT_TRUE(token.has_value()) << (token.has_value() ? "" : token.error());
+
+	PosixProcessSupervisor successor;
+	const auto taken = successor.adopt(ProcessHandle{ static_cast<int64_t>(orphan), token.value() });
+	ASSERT_TRUE(taken.has_value()) << (taken.has_value() ? "" : taken.error());
+
+	const auto running = successor.status(taken.value());
+	ASSERT_TRUE(running.has_value()) << (running.has_value() ? "" : running.error());
+	EXPECT_EQ(running.value().state, ProcessState::Running);
+
+	const auto stopped = successor.stop(taken.value(), std::chrono::seconds(1));
+	ASSERT_TRUE(stopped.has_value()) << (stopped.has_value() ? "" : stopped.error());
+
+	const auto after = successor.status(taken.value());
+	ASSERT_TRUE(after.has_value());
+	EXPECT_EQ(after.value().state, ProcessState::Exited);
 }
 
 TEST(ProcessIdentityTest, RejectsANonPositiveProcessId)
