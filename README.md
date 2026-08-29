@@ -176,6 +176,8 @@ AWS_REGION=ap-northeast-2
   "keep_previous_releases": 2,
   "s3_bucket": "yirang-releases",
   "s3_region": "ap-northeast-2",
+  "queue_region": "",
+  "queue_endpoint": "",
 
   "service": {
     "executable": "app.exe",
@@ -189,6 +191,8 @@ AWS_REGION=ap-northeast-2
   }
 }
 ```
+
+`queue_endpoint`·`queue_region` 은 **비우면 `s3_endpoint`·`s3_region` 을 따릅니다.** 저장소와 큐가 같은 엔드포인트(실 AWS 기본값 포함)면 적을 필요가 없고, 서로 다른 제공자를 쓸 때만 채웁니다. 폴백 방향이 *큐가 저장소를 승계*이므로, **저장소만 대체재로 옮기고 큐는 실 AWS SQS 를 쓰는 구성이라면 `queue_endpoint` 를 `https://sqs.<region>.amazonaws.com` 으로 명시해야 합니다** — 비워 두면 SQS 호출이 저장소 엔드포인트로 나갑니다.
 
 `service.executable`은 **릴리스 디렉터리 기준 상대 경로**입니다. 절대 경로를 허용하면 릴리스 밖을 실행할 수 있어 "검증 전 아티팩트를 실행하지 않는다"가 무너집니다.
 
@@ -377,8 +381,6 @@ S3·SQS 통합 테스트 2건은 환경변수(`YIRANG_TEST_S3_ENDPOINT` 등)가 
 ```
 
 `run_scenarios.sh` 는 실제 산출물(`build/out/yirang`·`yirang-agent`)과 `RestAPI` 를 띄워 **업로드 → REST 발행 → SQS 소비 → S3 다운로드·SHA-256 검증 → 설치 → 중단·교체·재시작 → 헬스체크 → 자동/수동 롤백**까지 사람 개입 없이 재현하고 판정합니다.
-
-> **`tests/e2e/agent_endpoint_mux.py` 가 있는 이유** — Agent 는 SQS 엔드포인트와 리전을 `s3_endpoint`·`s3_region` 설정에서 그대로 가져옵니다(`YirangAgent/main.cpp` `make_queue_options`). 큐 전용 엔드포인트 설정 필드가 없어서, **S3 호환 저장소와 SQS 호환 큐가 서로 다른 호스트에 있으면 한 Agent 가 둘 다 쓸 수 없습니다.** 실 AWS(양쪽 기본값)에서는 드러나지 않지만 R2 + ElasticMQ 같은 조합이 정확히 이 경우이고, SQS 수신 오류는 로그에도 남지 않습니다. 이 프록시는 `x-amz-target` 헤더 유무로 두 상류를 한 포트에 합쳐 주는 **테스트 전용 임시 우회**이며, 설정 필드가 분리되면 삭제됩니다. 루프백에만 바인딩하고 상류 주소는 상수입니다.
 
 ## 진행 상황
 

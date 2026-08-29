@@ -20,6 +20,10 @@
 	"s3_region": "ap-northeast-2",
 	"s3_endpoint": "",
 	"allow_insecure_tls": false,
+
+	"queue_region": "",
+	"queue_endpoint": "",
+
 	"service": {
 		"executable": "app.exe",
 		"arguments": [],

@@ -49,8 +49,8 @@ namespace
 	{
 		Messaging::QueueOptions options;
 		options.queue_url = configurations.queue_url();
-		options.region = configurations.s3_region();
-		options.endpoint = configurations.s3_endpoint();
+		options.region = configurations.queue_region();
+		options.endpoint = configurations.queue_endpoint();
 		options.allow_insecure_tls = configurations.allow_insecure_tls();
 		options.wait_time_seconds = configurations.poll_wait_seconds();
 

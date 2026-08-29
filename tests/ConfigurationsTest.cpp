@@ -300,6 +300,64 @@ TEST(ConfigurationsTest, InsecureTlsDefaultsToFalseAndIsOptIn)
 	}
 }
 
+TEST(ConfigurationsTest, QueueEndpointFallsBackToTheStoreEndpoint)
+{
+	{
+		const TemporaryConfig config(R"({"s3_endpoint": "http://storage.internal:8333", "s3_region": "ap-northeast-2"})");
+		auto arguments = config.arguments();
+		const Configurations configurations(arguments.parser());
+
+		EXPECT_EQ(configurations.queue_endpoint(), "http://storage.internal:8333");
+		EXPECT_EQ(configurations.queue_region(), "ap-northeast-2");
+	}
+
+	{
+		ArgumentFixture arguments({ "--config_path", absent_config_path() });
+		const Configurations configurations(arguments.parser());
+
+		EXPECT_EQ(configurations.queue_endpoint(), "");
+		EXPECT_EQ(configurations.queue_region(), "us-east-1");
+	}
+}
+
+TEST(ConfigurationsTest, QueueEndpointFallsBackToTheOverriddenStoreEndpoint)
+{
+	const TemporaryConfig config(R"({"s3_endpoint": "http://from-file:8333"})");
+	ArgumentFixture arguments({ "--config_path", config.path(), "--s3_endpoint", "http://from-argument:8333", "--s3_region", "eu-central-1" });
+	const Configurations configurations(arguments.parser());
+
+	EXPECT_EQ(configurations.queue_endpoint(), "http://from-argument:8333");
+	EXPECT_EQ(configurations.queue_region(), "eu-central-1");
+}
+
+TEST(ConfigurationsTest, QueueEndpointIsIndependentOfTheStoreEndpoint)
+{
+	const TemporaryConfig config(R"({
+		"s3_endpoint": "http://storage.internal:8333",
+		"s3_region": "ap-northeast-2",
+		"queue_endpoint": "http://queue.internal:9324",
+		"queue_region": "us-west-2"
+	})");
+	auto arguments = config.arguments();
+	const Configurations configurations(arguments.parser());
+
+	EXPECT_EQ(configurations.s3_endpoint(), "http://storage.internal:8333");
+	EXPECT_EQ(configurations.s3_region(), "ap-northeast-2");
+	EXPECT_EQ(configurations.queue_endpoint(), "http://queue.internal:9324");
+	EXPECT_EQ(configurations.queue_region(), "us-west-2");
+}
+
+TEST(ConfigurationsTest, QueueEndpointAcceptsAnArgumentOverride)
+{
+	const TemporaryConfig config(R"({"s3_endpoint": "http://storage.internal:8333", "queue_endpoint": "http://queue.internal:9324"})");
+	ArgumentFixture arguments({ "--config_path", config.path(), "--queue_endpoint", "http://other.internal:9325", "--queue_region", "eu-west-1" });
+	const Configurations configurations(arguments.parser());
+
+	EXPECT_EQ(configurations.queue_endpoint(), "http://other.internal:9325");
+	EXPECT_EQ(configurations.queue_region(), "eu-west-1");
+	EXPECT_EQ(configurations.s3_endpoint(), "http://storage.internal:8333");
+}
+
 TEST(ConfigurationsTest, ValidateRequiredRejectsAMissingDeviceId)
 {
 	const TemporaryConfig config(R"({"queue_url": "https://sqs.example/q", "s3_bucket": "yirang-releases"})");

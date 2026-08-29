@@ -10,15 +10,12 @@ WORK_DIR="$BUILD_DIR/e2e-workspace"
 CLI="$BUILD_DIR/out/yirang"
 AGENT="$BUILD_DIR/out/yirang-agent"
 
-MUX_PORT="${YIRANG_E2E_MUX_PORT:-9000}"
 API_PORT="${YIRANG_E2E_API_PORT:-18099}"
-MUX_ENDPOINT="http://127.0.0.1:$MUX_PORT"
 API_URL="http://127.0.0.1:$API_PORT"
 
 CLI_CONFIG="$WORK_DIR/cli.json"
 REPORTS="$WORK_DIR/reports.jsonl"
 
-MUX_PID=""
 API_PID=""
 AGENT_PC001_PID=""
 AGENT_PC002_PID=""
@@ -46,11 +43,14 @@ preflight() {
 	[ -x "$AGENT" ] || abort "$AGENT 가 없습니다. ./build.sh 를 먼저 실행하십시오."
 
 	local tool
-	for tool in jq python3 go curl lsof docker; do
+	for tool in jq go curl lsof docker; do
 		command -v "$tool" >/dev/null || abort "$tool 이 필요합니다."
 	done
 
-	require_port_free "$MUX_PORT" "엔드포인트 먹스" MUX
+	if pgrep -f "$WORK_DIR" >/dev/null 2>&1; then
+		abort "이전 실행의 프로세스가 남아 있습니다. pkill -f '$WORK_DIR' 로 정리한 뒤 다시 실행하십시오."
+	fi
+
 	require_port_free "$API_PORT" "RestAPI" API
 }
 
@@ -81,7 +81,6 @@ teardown() {
 	stop_process "$AGENT_PC002_PID"
 	pkill -f "$WORK_DIR/devices/pc-00[12]/service/releases/" 2>/dev/null
 	stop_process "$API_PID"
-	stop_process "$MUX_PID"
 	exit $status
 }
 
@@ -133,8 +132,11 @@ write_agent_config() {
 
 	"s3_bucket": "$BUCKET",
 	"s3_region": "us-east-1",
-	"s3_endpoint": "$MUX_ENDPOINT",
+	"s3_endpoint": "$S3_ENDPOINT",
 	"allow_insecure_tls": false,
+
+	"queue_region": "us-east-1",
+	"queue_endpoint": "$SQS_ENDPOINT",
 
 	"service": {
 		"executable": "app.sh",
@@ -157,22 +159,6 @@ write_agent_config() {
 	}
 }
 CONFIG
-}
-
-start_mux() {
-	python3 "$SCRIPT_DIR/agent_endpoint_mux.py" "$MUX_PORT" > "$WORK_DIR/logs/mux.log" 2>&1 &
-	MUX_PID=$!
-
-	local deadline=$((SECONDS + 20))
-	while [ "$SECONDS" -lt "$deadline" ]; do
-		if curl -s -o /dev/null --max-time 2 "$MUX_ENDPOINT/"; then
-			note "엔드포인트 먹스 준비됨: $MUX_ENDPOINT (x-amz-target 있으면 SQS, 없으면 S3)"
-			return 0
-		fi
-		sleep 0.5
-	done
-
-	abort "엔드포인트 먹스가 뜨지 않았습니다. $WORK_DIR/logs/mux.log 를 확인하십시오."
 }
 
 start_api() {
@@ -505,7 +491,6 @@ main() {
 
 	trap teardown EXIT INT TERM
 
-	start_mux
 	start_api
 	start_agents
 	warm_up

@@ -45,10 +45,6 @@ out/
 *.pdb
 *.ilk
 
-# python
-__pycache__/
-*.pyc
-
 # misc artifacts
 *.log
 *.tmp
