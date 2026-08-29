@@ -13,6 +13,7 @@
 	"s3_region": "us-east-1",
 	"s3_endpoint": "",
 
+	"allow_insecure_tls": false,
 	"log_root_path": "",
 	"write_console_log": 4,
 	"write_file_log": 4,

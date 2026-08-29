@@ -2,10 +2,13 @@
 
 #include "DeploymentEngine.h"
 
+#include <boost/json.hpp>
+
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -25,8 +28,28 @@ namespace
 				return std::unexpected("start refused");
 			}
 
-			Process::ProcessHandle handle{ ++next_id_ };
+			Process::ProcessHandle handle{ ++next_id_, static_cast<uint64_t>(next_id_) + 1000 };
 			state_.insert({ handle.id, alive_after_start_ ? Process::ProcessState::Running : Process::ProcessState::Exited });
+			token_.insert({ handle.id, handle.start_token });
+
+			return handle;
+		}
+
+		auto adopt(const Process::ProcessHandle& handle) -> std::expected<Process::ProcessHandle, std::string> override
+		{
+			adopted_.push_back(handle.id);
+
+			auto recorded = token_.find(handle.id);
+			if (recorded == token_.end() || recorded->second != handle.start_token)
+			{
+				return std::unexpected("process is not the recorded instance");
+			}
+
+			auto living = state_.find(handle.id);
+			if (living == state_.end() || living->second != Process::ProcessState::Running)
+			{
+				return std::unexpected("process does not exist");
+			}
 
 			return handle;
 		}
@@ -57,16 +80,30 @@ namespace
 
 		auto started(void) const -> std::vector<std::string> { return started_; }
 		auto stopped(void) const -> std::vector<int64_t> { return stopped_; }
+		auto adopted(void) const -> std::vector<int64_t> { return adopted_; }
 
 		auto fail_start(void) -> void { fail_start_ = true; }
 		auto fail_stop(void) -> void { fail_stop_ = true; }
 
 		auto exit_immediately(void) -> void { alive_after_start_ = false; }
 
+		auto already_running(int64_t id, uint64_t token) -> void
+		{
+			state_[id] = Process::ProcessState::Running;
+			token_[id] = token;
+
+			if (id > next_id_)
+			{
+				next_id_ = id;
+			}
+		}
+
 	private:
 		std::map<int64_t, Process::ProcessState> state_;
+		std::map<int64_t, uint64_t> token_;
 		std::vector<std::string> started_;
 		std::vector<int64_t> stopped_;
+		std::vector<int64_t> adopted_;
 
 		int64_t next_id_{ 0 };
 		bool fail_start_{ false };
@@ -112,6 +149,50 @@ namespace
 	private:
 		std::filesystem::path root_;
 	};
+
+	auto record_path(const TemporaryTree& tree) -> std::filesystem::path { return std::filesystem::path(tree.service_root()) / "runtime.json"; }
+
+	auto read_record(const TemporaryTree& tree) -> boost::json::object
+	{
+		std::ifstream source(record_path(tree), std::ios::binary);
+
+		std::ostringstream buffer;
+		buffer << source.rdbuf();
+
+		auto parsed = boost::json::parse(buffer.str());
+
+		return parsed.as_object();
+	}
+
+	auto write_record(const TemporaryTree& tree, const boost::json::object& root) -> void
+	{
+		std::ofstream sink(record_path(tree), std::ios::binary | std::ios::trunc);
+		sink << boost::json::serialize(root);
+	}
+
+	auto deletion_is_enforced(void) -> bool
+	{
+		static const auto token = std::to_string(std::random_device{}());
+
+		const auto probe = std::filesystem::temp_directory_path() / ("yirang-deploy-perm-probe-" + token);
+
+		std::error_code ignored;
+		std::filesystem::remove_all(probe, ignored);
+		std::filesystem::create_directories(probe);
+
+		std::ofstream(probe / "locked.txt") << "locked";
+		std::filesystem::permissions(probe, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec, ignored);
+
+		std::error_code error;
+		std::filesystem::remove(probe / "locked.txt", error);
+
+		const bool enforced = static_cast<bool>(error);
+
+		std::filesystem::permissions(probe, std::filesystem::perms::owner_all, std::filesystem::perm_options::add, ignored);
+		std::filesystem::remove_all(probe, ignored);
+
+		return enforced;
+	}
 
 	struct Fixture
 	{
@@ -360,4 +441,215 @@ TEST(DeploymentEngineTest, ApplyMakesTheExecutableRunnable)
 
 	ASSERT_FALSE(error) << error.message();
 	EXPECT_NE((mode & std::filesystem::perms::owner_exec), std::filesystem::perms::none) << "설치본에 실행 권한이 없다";
+}
+
+TEST(DeploymentEngineTest, ApplyRecordsTheRunningInstance)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+	ASSERT_TRUE(std::filesystem::exists(record_path(tree)));
+
+	const auto recorded = read_record(tree);
+
+	EXPECT_EQ(recorded.at("release_id").as_string(), "rel_1");
+	EXPECT_EQ(recorded.at("process_id").as_int64(), 1);
+	EXPECT_EQ(recorded.at("start_token").as_int64(), 1001);
+	EXPECT_FALSE(recorded.at("boot_identity").as_string().empty());
+}
+
+TEST(DeploymentEngineTest, StopRemovesTheRecord)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+	ASSERT_TRUE(fixture.engine->stop().has_value());
+
+	EXPECT_FALSE(std::filesystem::exists(record_path(tree)));
+}
+
+TEST(DeploymentEngineTest, StartActiveAdoptsTheRecordedInstanceInsteadOfStartingASecond)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+
+	auto restarted = make_fixture(tree);
+	restarted.supervisor->already_running(1, 1001);
+
+	const auto resumed = restarted.engine->start_active();
+
+	ASSERT_TRUE(resumed.has_value()) << (resumed.has_value() ? "" : resumed.error());
+	EXPECT_TRUE(restarted.supervisor->started().empty());
+	EXPECT_EQ(restarted.supervisor->adopted(), std::vector<int64_t>{ 1 });
+	EXPECT_TRUE(restarted.engine->running());
+	EXPECT_NE(restarted.engine->last_detail().find("adopted"), std::string::npos) << restarted.engine->last_detail();
+}
+
+TEST(DeploymentEngineTest, StartActiveLaunchesWhenTheRecordedInstanceIsGone)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+
+	auto restarted = make_fixture(tree);
+
+	const auto resumed = restarted.engine->start_active();
+
+	ASSERT_TRUE(resumed.has_value()) << (resumed.has_value() ? "" : resumed.error());
+	ASSERT_EQ(restarted.supervisor->started().size(), 1u);
+	EXPECT_EQ(restarted.supervisor->adopted(), std::vector<int64_t>{ 1 });
+	EXPECT_TRUE(restarted.supervisor->stopped().empty());
+}
+
+TEST(DeploymentEngineTest, StartActiveRefusesToAdoptWhenTheStartTokenDoesNotMatch)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+
+	auto restarted = make_fixture(tree);
+	restarted.supervisor->already_running(1, 4242);
+
+	const auto resumed = restarted.engine->start_active();
+
+	ASSERT_TRUE(resumed.has_value()) << (resumed.has_value() ? "" : resumed.error());
+	EXPECT_TRUE(restarted.supervisor->stopped().empty());
+	ASSERT_EQ(restarted.supervisor->started().size(), 1u);
+
+	const auto recorded = read_record(tree);
+	EXPECT_EQ(recorded.at("process_id").as_int64(), 2);
+}
+
+TEST(DeploymentEngineTest, StartActiveRefusesToAdoptARecordFromAnEarlierBoot)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+
+	auto stale = read_record(tree);
+	stale["boot_identity"] = "0.000000";
+	write_record(tree, stale);
+
+	auto restarted = make_fixture(tree);
+	restarted.supervisor->already_running(1, 1001);
+
+	const auto resumed = restarted.engine->start_active();
+
+	ASSERT_TRUE(resumed.has_value()) << (resumed.has_value() ? "" : resumed.error());
+	EXPECT_TRUE(restarted.supervisor->adopted().empty());
+	EXPECT_TRUE(restarted.supervisor->stopped().empty());
+	EXPECT_EQ(restarted.supervisor->started().size(), 1u);
+}
+
+TEST(DeploymentEngineTest, StartActiveStopsAnAdoptedInstanceOfAnotherRelease)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+	ASSERT_TRUE(fixture.installer->install("rel_2", tree.stage("rel_2")).has_value());
+	ASSERT_TRUE(fixture.installer->activate("rel_2").has_value());
+
+	auto restarted = make_fixture(tree);
+	restarted.supervisor->already_running(1, 1001);
+
+	const auto resumed = restarted.engine->start_active();
+
+	ASSERT_TRUE(resumed.has_value()) << (resumed.has_value() ? "" : resumed.error());
+	EXPECT_EQ(restarted.supervisor->adopted(), std::vector<int64_t>{ 1 });
+	EXPECT_EQ(restarted.supervisor->stopped(), std::vector<int64_t>{ 1 });
+	ASSERT_EQ(restarted.supervisor->started().size(), 1u);
+	EXPECT_NE(restarted.supervisor->started().at(0).find("releases/rel_2/app.exe"), std::string::npos);
+
+	const auto recorded = read_record(tree);
+	EXPECT_EQ(recorded.at("release_id").as_string(), "rel_2");
+}
+
+TEST(DeploymentEngineTest, ApplyStopsTheAdoptedInstance)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+
+	auto restarted = make_fixture(tree);
+	restarted.supervisor->already_running(1, 1001);
+	ASSERT_TRUE(restarted.engine->start_active().has_value());
+
+	const auto applied = restarted.engine->apply("rel_2", tree.stage("rel_2"));
+
+	ASSERT_TRUE(applied.has_value()) << (applied.has_value() ? "" : applied.error());
+	EXPECT_EQ(restarted.supervisor->stopped(), std::vector<int64_t>{ 1 });
+	ASSERT_EQ(restarted.supervisor->started().size(), 1u);
+}
+
+TEST(DeploymentEngineTest, StartActiveIgnoresACorruptedRecordAndStartsTheActiveRelease)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+
+	{
+		std::ofstream sink(record_path(tree), std::ios::binary | std::ios::trunc);
+		sink << R"({"release_id":"rel_1","process_)";
+	}
+
+	auto restarted = make_fixture(tree);
+	restarted.supervisor->already_running(1, 1001);
+
+	const auto resumed = restarted.engine->start_active();
+
+	ASSERT_TRUE(resumed.has_value()) << (resumed.has_value() ? "" : resumed.error());
+	EXPECT_TRUE(restarted.supervisor->adopted().empty());
+	ASSERT_EQ(restarted.supervisor->started().size(), 1u);
+	EXPECT_EQ(read_record(tree).at("process_id").as_int64(), 2);
+}
+
+TEST(DeploymentEngineTest, ApplyKeepsTheRunningInstanceWhenStopFailsAndDoesNotStartASecond)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+
+	fixture.supervisor->fail_stop();
+
+	ASSERT_FALSE(fixture.engine->apply("rel_2", tree.stage("rel_2")).has_value());
+	ASSERT_FALSE(fixture.engine->apply("rel_3", tree.stage("rel_3")).has_value());
+
+	EXPECT_EQ(fixture.supervisor->started().size(), 1u) << "중단이 실패했는데 새 인스턴스를 띄웠다";
+	EXPECT_EQ(read_record(tree).at("process_id").as_int64(), 1);
+}
+
+TEST(DeploymentEngineTest, LaunchReportsWhenTheInstanceCannotBeRecorded)
+{
+	if (!deletion_is_enforced())
+	{
+		GTEST_SKIP() << "this filesystem does not enforce directory write permission";
+	}
+
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.installer->install("rel_1", tree.stage("rel_1")).has_value());
+	ASSERT_TRUE(fixture.installer->activate("rel_1").has_value());
+
+	std::error_code ignored;
+	std::filesystem::permissions(tree.service_root(), std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec, ignored);
+
+	const auto resumed = fixture.engine->start_active();
+
+	std::filesystem::permissions(tree.service_root(), std::filesystem::perms::owner_all, std::filesystem::perm_options::add, ignored);
+
+	ASSERT_FALSE(resumed.has_value());
+	EXPECT_NE(resumed.error().find("cannot record"), std::string::npos) << resumed.error();
+	EXPECT_EQ(fixture.supervisor->started().size(), 1u);
 }

@@ -43,6 +43,10 @@ namespace YirangAgent
 		auto s3_region(void) const -> std::string;
 
 		auto s3_endpoint(void) const -> std::string;
+		auto allow_insecure_tls(void) const -> bool;
+
+		auto queue_region(void) const -> std::string;
+		auto queue_endpoint(void) const -> std::string;
 
 		auto service_executable(void) const -> std::string;
 		auto service_arguments(void) const -> std::vector<std::string>;
@@ -88,6 +92,10 @@ namespace YirangAgent
 		std::string s3_bucket_;
 		std::string s3_region_;
 		std::string s3_endpoint_;
+		bool allow_insecure_tls_;
+
+		std::string queue_region_;
+		std::string queue_endpoint_;
 
 		std::string service_executable_;
 		std::vector<std::string> service_arguments_;

@@ -6,12 +6,14 @@ set(CORE_LIBRARY_NAME DeployCLICore)
 
 set(CORE_HEADER_FILES
     Configurations.h
+    Confirmation.h
     RestClient.h
     Commands.h
 )
 
 set(CORE_SOURCE_FILES
     Configurations.cpp
+    Confirmation.cpp
     RestClient.cpp
     Commands.cpp
 )

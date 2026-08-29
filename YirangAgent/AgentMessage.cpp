@@ -48,6 +48,11 @@ namespace YirangAgent
 			message.payload = "{}";
 		}
 
+		if (root.contains("target_group") && root.at("target_group").is_string())
+		{
+			message.target_group = root.at("target_group").as_string().c_str();
+		}
+
 		if (root.contains("reply_queue_url") && root.at("reply_queue_url").is_string())
 		{
 			message.reply_queue_url = root.at("reply_queue_url").as_string().c_str();
@@ -71,6 +76,11 @@ namespace YirangAgent
 			payload = boost::json::value(message.payload);
 		}
 		root["payload"] = payload;
+
+		if (!message.target_group.empty())
+		{
+			root["target_group"] = message.target_group;
+		}
 
 		if (!message.reply_queue_url.empty())
 		{

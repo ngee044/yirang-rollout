@@ -14,6 +14,8 @@ namespace Messaging
 
 		std::string endpoint;
 
+		bool allow_insecure_tls{ false };
+
 		int wait_time_seconds{ 20 };
 
 		int visibility_timeout_seconds{ 300 };

@@ -10,6 +10,8 @@ namespace YirangAgent
 		std::string command;
 		std::string payload;
 
+		std::string target_group;
+
 		std::string reply_queue_url;
 	};
 

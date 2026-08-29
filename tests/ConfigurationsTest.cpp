@@ -149,7 +149,7 @@ TEST(ConfigurationsTest, CommandLineArgumentsOverrideFileValues)
 TEST(ConfigurationsTest, ValidateRequiredRejectsIncompleteConfiguration)
 {
 	{
-		const TemporaryConfig config(R"({"s3_bucket": "yirang-releases"})");
+		const TemporaryConfig config(R"({"device_id": "pc-001", "s3_bucket": "yirang-releases"})");
 		auto arguments = config.arguments();
 		const Configurations configurations(arguments.parser());
 
@@ -159,7 +159,7 @@ TEST(ConfigurationsTest, ValidateRequiredRejectsIncompleteConfiguration)
 	}
 
 	{
-		const TemporaryConfig config(R"({"queue_url": "https://sqs.example/q"})");
+		const TemporaryConfig config(R"({"device_id": "pc-001", "queue_url": "https://sqs.example/q"})");
 		auto arguments = config.arguments();
 		const Configurations configurations(arguments.parser());
 
@@ -169,7 +169,7 @@ TEST(ConfigurationsTest, ValidateRequiredRejectsIncompleteConfiguration)
 	}
 
 	{
-		const TemporaryConfig config(R"({"queue_url": "https://sqs.example/q", "s3_bucket": "yirang-releases"})");
+		const TemporaryConfig config(R"({"device_id": "pc-001", "queue_url": "https://sqs.example/q", "s3_bucket": "yirang-releases"})");
 		auto arguments = config.arguments();
 		const Configurations configurations(arguments.parser());
 
@@ -180,6 +180,7 @@ TEST(ConfigurationsTest, ValidateRequiredRejectsIncompleteConfiguration)
 TEST(ConfigurationsTest, ValidateRequiredRejectsIdenticalRoots)
 {
 	const TemporaryConfig config(R"({
+		"device_id": "pc-001",
 		"queue_url": "https://sqs.example/q",
 		"s3_bucket": "yirang-releases",
 		"version_root": "/tmp/yirang-shared",
@@ -263,4 +264,126 @@ TEST(ConfigurationsTest, NestedServiceAndHealthSectionsAreLoaded)
 	EXPECT_EQ(configurations.health_interval_ms(), 200);
 	EXPECT_EQ(configurations.health_success_threshold(), 2);
 	EXPECT_EQ(configurations.health_failure_threshold(), 5);
+}
+
+TEST(ConfigurationsTest, InsecureTlsDefaultsToFalseAndIsOptIn)
+{
+	{
+		ArgumentFixture arguments({ "--config_path", absent_config_path() });
+		const Configurations configurations(arguments.parser());
+
+		EXPECT_FALSE(configurations.allow_insecure_tls());
+	}
+
+	{
+		const TemporaryConfig config(R"({"allow_insecure_tls": true})");
+		auto arguments = config.arguments();
+		const Configurations configurations(arguments.parser());
+
+		EXPECT_TRUE(configurations.allow_insecure_tls());
+	}
+
+	{
+		const TemporaryConfig config(R"({"allow_insecure_tls": "true"})");
+		auto arguments = config.arguments();
+		const Configurations configurations(arguments.parser());
+
+		EXPECT_FALSE(configurations.allow_insecure_tls());
+	}
+
+	{
+		const TemporaryConfig config(R"({"allow_insecure_tls": true})");
+		ArgumentFixture arguments({ "--config_path", config.path(), "--allow_insecure_tls", "false" });
+		const Configurations configurations(arguments.parser());
+
+		EXPECT_FALSE(configurations.allow_insecure_tls());
+	}
+}
+
+TEST(ConfigurationsTest, QueueEndpointFallsBackToTheStoreEndpoint)
+{
+	{
+		const TemporaryConfig config(R"({"s3_endpoint": "http://storage.internal:8333", "s3_region": "ap-northeast-2"})");
+		auto arguments = config.arguments();
+		const Configurations configurations(arguments.parser());
+
+		EXPECT_EQ(configurations.queue_endpoint(), "http://storage.internal:8333");
+		EXPECT_EQ(configurations.queue_region(), "ap-northeast-2");
+	}
+
+	{
+		ArgumentFixture arguments({ "--config_path", absent_config_path() });
+		const Configurations configurations(arguments.parser());
+
+		EXPECT_EQ(configurations.queue_endpoint(), "");
+		EXPECT_EQ(configurations.queue_region(), "us-east-1");
+	}
+}
+
+TEST(ConfigurationsTest, QueueEndpointFallsBackToTheOverriddenStoreEndpoint)
+{
+	const TemporaryConfig config(R"({"s3_endpoint": "http://from-file:8333"})");
+	ArgumentFixture arguments({ "--config_path", config.path(), "--s3_endpoint", "http://from-argument:8333", "--s3_region", "eu-central-1" });
+	const Configurations configurations(arguments.parser());
+
+	EXPECT_EQ(configurations.queue_endpoint(), "http://from-argument:8333");
+	EXPECT_EQ(configurations.queue_region(), "eu-central-1");
+}
+
+TEST(ConfigurationsTest, QueueEndpointIsIndependentOfTheStoreEndpoint)
+{
+	const TemporaryConfig config(R"({
+		"s3_endpoint": "http://storage.internal:8333",
+		"s3_region": "ap-northeast-2",
+		"queue_endpoint": "http://queue.internal:9324",
+		"queue_region": "us-west-2"
+	})");
+	auto arguments = config.arguments();
+	const Configurations configurations(arguments.parser());
+
+	EXPECT_EQ(configurations.s3_endpoint(), "http://storage.internal:8333");
+	EXPECT_EQ(configurations.s3_region(), "ap-northeast-2");
+	EXPECT_EQ(configurations.queue_endpoint(), "http://queue.internal:9324");
+	EXPECT_EQ(configurations.queue_region(), "us-west-2");
+}
+
+TEST(ConfigurationsTest, QueueEndpointAcceptsAnArgumentOverride)
+{
+	const TemporaryConfig config(R"({"s3_endpoint": "http://storage.internal:8333", "queue_endpoint": "http://queue.internal:9324"})");
+	ArgumentFixture arguments({ "--config_path", config.path(), "--queue_endpoint", "http://other.internal:9325", "--queue_region", "eu-west-1" });
+	const Configurations configurations(arguments.parser());
+
+	EXPECT_EQ(configurations.queue_endpoint(), "http://other.internal:9325");
+	EXPECT_EQ(configurations.queue_region(), "eu-west-1");
+	EXPECT_EQ(configurations.s3_endpoint(), "http://storage.internal:8333");
+}
+
+TEST(ConfigurationsTest, ValidateRequiredRejectsAMissingDeviceId)
+{
+	const TemporaryConfig config(R"({"queue_url": "https://sqs.example/q", "s3_bucket": "yirang-releases"})");
+	auto arguments = config.arguments();
+	const Configurations configurations(arguments.parser());
+
+	const auto result = configurations.validate_required();
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("device_id"), std::string::npos) << result.error();
+}
+
+TEST(ConfigurationsTest, ValidateRequiredRejectsAResultQueueThatIsTheCommandQueue)
+{
+	const TemporaryConfig config(R"({
+		"device_id": "pc-001",
+		"queue_url": "https://sqs.example/q",
+		"result_queue_url": "https://sqs.example/q",
+		"s3_bucket": "yirang-releases"
+	})");
+
+	auto arguments = config.arguments();
+	const Configurations configurations(arguments.parser());
+
+	const auto result = configurations.validate_required();
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("result_queue_url"), std::string::npos) << result.error();
 }

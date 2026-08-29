@@ -41,6 +41,14 @@ namespace Deploy
 
 		auto recover(const std::string& reason) -> std::expected<void, std::string>;
 
+		auto resume(const std::string& release_id) -> std::expected<void, std::string>;
+
+		auto record_path(void) const -> std::string;
+		auto record(void) -> std::expected<RuntimeRecord, std::string>;
+		auto unreadable_record(const std::string& reason) -> std::expected<RuntimeRecord, std::string>;
+		auto write_record(const RuntimeRecord& next) const -> std::expected<void, std::string>;
+		auto clear_record(void) const -> std::expected<void, std::string>;
+
 		std::shared_ptr<Install::ReleaseInstaller> installer_;
 		std::shared_ptr<Process::IProcessSupervisor> supervisor_;
 

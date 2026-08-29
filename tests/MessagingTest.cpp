@@ -109,7 +109,7 @@ TEST(MessagingIntegrationTest, PublishedMessageReachesConsumer)
 
 	if (endpoint.empty() || queue_url.empty())
 	{
-		GTEST_SKIP() << "YIRANG_TEST_SQS_ENDPOINT / YIRANG_TEST_SQS_QUEUE_URL 이 없어 건너뜁니다 (LocalStack 필요)";
+		GTEST_SKIP() << "YIRANG_TEST_SQS_ENDPOINT / YIRANG_TEST_SQS_QUEUE_URL 이 없어 건너뜁니다 (tests/e2e/run_integration.sh 로 실행)";
 	}
 
 	QueueOptions options;
@@ -143,4 +143,19 @@ TEST(MessagingIntegrationTest, PublishedMessageReachesConsumer)
 	consumer.stop();
 
 	EXPECT_NE(received.find("current_status"), std::string::npos);
+}
+
+TEST(MessagingTest, TlsVerificationIsOptOutOnly)
+{
+	QueueOptions options;
+
+	EXPECT_FALSE(options.allow_insecure_tls);
+
+	options.queue_url = "https://queue.internal:9324/q";
+	options.endpoint = "https://queue.internal:9324";
+	options.allow_insecure_tls = true;
+
+	const SqsMessageConsumer consumer(options);
+
+	EXPECT_TRUE(consumer.options().allow_insecure_tls);
 }

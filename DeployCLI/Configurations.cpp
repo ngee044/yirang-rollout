@@ -50,12 +50,14 @@ namespace DeployCli
 		, s3_bucket_("")
 		, s3_region_("us-east-1")
 		, s3_endpoint_("")
+		, allow_insecure_tls_(false)
 		, log_root_path_("")
 		, write_console_log_((int)LogTypes::Information)
 		, write_file_log_((int)LogTypes::Information)
 		, write_interval_(1000)
 		, show_help_(false)
 		, show_version_(false)
+		, confirm_token_("")
 		, load_warning_(std::nullopt)
 	{
 		root_path_ = arguments.program_folder();
@@ -97,6 +99,8 @@ namespace DeployCli
 
 	auto Configurations::s3_endpoint(void) const -> std::string { return s3_endpoint_; }
 
+	auto Configurations::allow_insecure_tls(void) const -> bool { return allow_insecure_tls_; }
+
 	auto Configurations::log_root_path(void) const -> std::string { return log_root_path_; }
 
 	auto Configurations::write_console_log(void) const -> LogTypes { return (LogTypes)write_console_log_; }
@@ -108,6 +112,8 @@ namespace DeployCli
 	auto Configurations::show_help(void) const -> bool { return show_help_; }
 
 	auto Configurations::show_version(void) const -> bool { return show_version_; }
+
+	auto Configurations::confirm_token(void) const -> std::string { return confirm_token_; }
 
 	auto Configurations::load_warning(void) const -> std::optional<std::string> { return load_warning_; }
 
@@ -204,6 +210,14 @@ namespace DeployCli
 			}
 		};
 
+		auto read_bool = [&message](const char* key, bool& target) -> void
+		{
+			if (message.contains(key) && message.at(key).is_bool())
+			{
+				target = message.at(key).as_bool();
+			}
+		};
+
 		auto read_string_array = [&message](const char* key, std::vector<std::string>& target) -> void
 		{
 			if (!message.contains(key) || !message.at(key).is_array())
@@ -232,6 +246,7 @@ namespace DeployCli
 		read_string("s3_bucket", s3_bucket_);
 		read_string("s3_region", s3_region_);
 		read_string("s3_endpoint", s3_endpoint_);
+		read_bool("allow_insecure_tls", allow_insecure_tls_);
 
 		read_string("log_root_path", log_root_path_);
 		read_int("write_console_log", write_console_log_);
@@ -275,6 +290,12 @@ namespace DeployCli
 		if (string_target != std::nullopt)
 		{
 			s3_endpoint_ = string_target.value();
+		}
+
+		auto bool_target = arguments.to_bool("--allow_insecure_tls");
+		if (bool_target != std::nullopt)
+		{
+			allow_insecure_tls_ = bool_target.value();
 		}
 
 		auto upload_target = arguments.to_string("--upload_file_list");
@@ -328,6 +349,12 @@ namespace DeployCli
 
 		show_help_ = arguments.to_string("--help") != std::nullopt;
 		show_version_ = arguments.to_string("--version") != std::nullopt;
+
+		auto confirm_target = arguments.to_string("--confirm");
+		if (confirm_target != std::nullopt)
+		{
+			confirm_token_ = confirm_target.value();
+		}
 	}
 
 	auto Configurations::validate_configuration(void) -> void

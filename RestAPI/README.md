@@ -158,7 +158,7 @@ AWS 자격증명은 SDK 기본 체인(환경변수·프로파일·인스턴스 �
 gofmt -l .
 go vet ./...
 go build ./...
-go test -race ./...     # 84건
+go test -race ./...     # 최상위 Test 함수 53개 (서브테스트 포함)
 ```
 
 ## 구조
@@ -178,6 +178,8 @@ RestAPI/
 계층은 `rest → service → queue` 단방향입니다. 인터페이스는 **쓰는 쪽**이 선언합니다 — `service`가 필요한 `Publisher`/`Receiver`를, `rest`가 필요한 서비스 모양을 각자 정의하므로, 하위 계층을 바꿔도 상위가 따라 바뀌지 않습니다.
 
 `internal/models/message.go`의 봉투와 명령 상수는 C++ `YirangAgent/AgentMessage.h`와 짝을 이룹니다. 한쪽을 바꾸면 반드시 다른 쪽도 함께 바꿔야 합니다.
+
+봉투는 `{command, payload, target_group, reply_queue_url}`이며 뒤 두 필드는 `omitempty`입니다. 요청의 `group`이 그대로 `target_group`에 실리고, Agent는 값이 있을 때만 자기 `group`과 대조해 불일치를 거부합니다(오배달 방어). 그룹 없이 전체 발행하면 필드가 빠지므로 모든 기기가 처리합니다.
 
 ## 설계 메모
 

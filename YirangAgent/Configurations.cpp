@@ -33,6 +33,9 @@ namespace YirangAgent
 		, s3_bucket_("")
 		, s3_region_("us-east-1")
 		, s3_endpoint_("")
+		, allow_insecure_tls_(false)
+		, queue_region_("")
+		, queue_endpoint_("")
 		, service_executable_("")
 		, service_arguments_()
 		, service_working_directory_("")
@@ -99,6 +102,12 @@ namespace YirangAgent
 
 	auto Configurations::s3_endpoint(void) const -> std::string { return s3_endpoint_; }
 
+	auto Configurations::allow_insecure_tls(void) const -> bool { return allow_insecure_tls_; }
+
+	auto Configurations::queue_region(void) const -> std::string { return queue_region_; }
+
+	auto Configurations::queue_endpoint(void) const -> std::string { return queue_endpoint_; }
+
 	auto Configurations::service_executable(void) const -> std::string { return service_executable_; }
 
 	auto Configurations::service_arguments(void) const -> std::vector<std::string> { return service_arguments_; }
@@ -129,6 +138,11 @@ namespace YirangAgent
 
 	auto Configurations::validate_required(void) const -> std::expected<void, std::string>
 	{
+		if (device_id_.empty())
+		{
+			return std::unexpected("device_id is required");
+		}
+
 		if (queue_url_.empty())
 		{
 			return std::unexpected("queue_url is required");
@@ -137,6 +151,11 @@ namespace YirangAgent
 		if (s3_bucket_.empty())
 		{
 			return std::unexpected("s3_bucket is required");
+		}
+
+		if (!result_queue_url_.empty() && result_queue_url_ == queue_url_)
+		{
+			return std::unexpected("result_queue_url must not be the same as queue_url");
 		}
 
 		if (!service_root_.empty() && version_root_ == service_root_)
@@ -198,6 +217,14 @@ namespace YirangAgent
 			}
 		};
 
+		auto read_bool = [&message](const char* key, bool& target) -> void
+		{
+			if (message.contains(key) && message.at(key).is_bool())
+			{
+				target = message.at(key).as_bool();
+			}
+		};
+
 		read_string("main_title", main_title_);
 		read_int("write_file_log", write_file_log_);
 		read_int("write_console_log", write_console_log_);
@@ -218,6 +245,9 @@ namespace YirangAgent
 		read_string("s3_bucket", s3_bucket_);
 		read_string("s3_region", s3_region_);
 		read_string("s3_endpoint", s3_endpoint_);
+		read_string("queue_region", queue_region_);
+		read_string("queue_endpoint", queue_endpoint_);
+		read_bool("allow_insecure_tls", allow_insecure_tls_);
 
 		auto read_nested = [&message](const char* section, auto&& reader) -> void
 		{
@@ -357,10 +387,34 @@ namespace YirangAgent
 			s3_bucket_ = string_target.value();
 		}
 
+		string_target = arguments.to_string("--s3_region");
+		if (string_target != std::nullopt)
+		{
+			s3_region_ = string_target.value();
+		}
+
 		string_target = arguments.to_string("--s3_endpoint");
 		if (string_target != std::nullopt)
 		{
 			s3_endpoint_ = string_target.value();
+		}
+
+		string_target = arguments.to_string("--queue_region");
+		if (string_target != std::nullopt)
+		{
+			queue_region_ = string_target.value();
+		}
+
+		string_target = arguments.to_string("--queue_endpoint");
+		if (string_target != std::nullopt)
+		{
+			queue_endpoint_ = string_target.value();
+		}
+
+		auto bool_target = arguments.to_bool("--allow_insecure_tls");
+		if (bool_target != std::nullopt)
+		{
+			allow_insecure_tls_ = bool_target.value();
 		}
 	}
 
@@ -446,6 +500,16 @@ namespace YirangAgent
 		if (s3_region_.empty())
 		{
 			s3_region_ = "us-east-1";
+		}
+
+		if (queue_region_.empty())
+		{
+			queue_region_ = s3_region_;
+		}
+
+		if (queue_endpoint_.empty())
+		{
+			queue_endpoint_ = s3_endpoint_;
 		}
 	}
 }

@@ -33,6 +33,9 @@ namespace Install
 	private:
 		auto releases_root(void) const -> std::string;
 		auto state_path(void) const -> std::string;
+		auto retired_directory(const std::string& release_id) const -> std::string;
+		auto sweep_retired(void) const -> void;
+		auto publish_staging(const std::string& staging, const std::string& release_id) const -> std::expected<void, std::string>;
 		auto write_state(const ActivationState& next) const -> std::expected<void, std::string>;
 
 		auto refresh_current_link(const std::string& release_id) const -> void;

@@ -6,6 +6,7 @@
 
 #include <boost/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <format>
 #include <iostream>
@@ -19,6 +20,23 @@ namespace DeployCli
 		const std::vector<std::string> agent_commands{ "download_version", "apply_version", "current_status", "clean_old_version", "rollback_version" };
 
 		auto is_agent_command(const std::string& name) -> bool { return std::find(agent_commands.begin(), agent_commands.end(), name) != agent_commands.end(); }
+
+		const std::vector<std::string> destructive_commands{ "clean_old_version" };
+
+		auto is_destructive_command(const std::string& name) -> bool
+		{
+			return std::find(destructive_commands.begin(), destructive_commands.end(), name) != destructive_commands.end();
+		}
+
+		auto scope_of(const std::string& group) -> std::string
+		{
+			if (group.empty())
+			{
+				return "every registered device";
+			}
+
+			return std::format("group '{}'", group);
+		}
 
 		auto parse_object(const std::string& text) -> std::expected<boost::json::object, std::string>
 		{
@@ -70,8 +88,11 @@ namespace DeployCli
 		}
 	}
 
-	Commands::Commands(const Configurations& configurations, std::shared_ptr<Artifact::IArtifactStore> store, std::shared_ptr<RestClient> client)
-		: configurations_(configurations), store_(std::move(store)), client_(std::move(client)), handlers_(), last_output_()
+	Commands::Commands(const Configurations& configurations,
+					   std::shared_ptr<Artifact::IArtifactStore> store,
+					   std::shared_ptr<RestClient> client,
+					   std::shared_ptr<Confirmation> confirmation)
+		: configurations_(configurations), store_(std::move(store)), client_(std::move(client)), confirmation_(std::move(confirmation)), handlers_(), last_output_()
 	{
 		handlers_.insert({ "deploy", std::bind(&Commands::deploy, this, std::placeholders::_1) });
 		handlers_.insert({ "command", std::bind(&Commands::command, this, std::placeholders::_1) });
@@ -185,6 +206,29 @@ namespace DeployCli
 		if (!is_agent_command(name))
 		{
 			return std::unexpected(std::format("'{}' is not an agent command (one of {})", name, boost::json::serialize(boost::json::value_from(agent_commands))));
+		}
+
+		if (is_destructive_command(name))
+		{
+			const auto warning = configurations_.load_warning();
+			if (warning != std::nullopt && configurations_.target_group().empty())
+			{
+				return std::unexpected(
+					std::format("'{}' was not published — the configuration was not loaded ({}) and no target group was given, so the scope would be every "
+								"registered device by default. pass --target_group <name>",
+								name, warning.value()));
+			}
+
+			if (confirmation_ == nullptr)
+			{
+				return std::unexpected(std::format("'{}' was not published — confirmation is not available", name));
+			}
+
+			auto confirmed = confirmation_->require(name, scope_of(configurations_.target_group()));
+			if (!confirmed)
+			{
+				return std::unexpected(confirmed.error());
+			}
 		}
 
 		boost::json::object payload;

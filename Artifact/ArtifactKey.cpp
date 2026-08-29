@@ -33,7 +33,7 @@ namespace Artifact
 		}
 	}
 
-	auto make_object_key(const std::string& release_id, const std::string& install_path) -> std::expected<std::string, std::string>
+	auto validate_release_id(const std::string& release_id) -> std::expected<void, std::string>
 	{
 		if (release_id.empty())
 		{
@@ -48,6 +48,22 @@ namespace Artifact
 		if (release_id == "." || release_id == "..")
 		{
 			return std::unexpected(std::format("release_id must not be a path reference: '{}'", release_id));
+		}
+
+		if (release_id.size() >= 2 && release_id[1] == ':')
+		{
+			return std::unexpected(std::format("release_id must not be a drive path: '{}'", release_id));
+		}
+
+		return {};
+	}
+
+	auto make_object_key(const std::string& release_id, const std::string& install_path) -> std::expected<std::string, std::string>
+	{
+		auto valid = validate_release_id(release_id);
+		if (!valid)
+		{
+			return std::unexpected(valid.error());
 		}
 
 		if (install_path.empty())

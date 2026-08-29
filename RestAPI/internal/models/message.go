@@ -10,6 +10,8 @@ type AgentMessage struct {
 
 	Payload json.RawMessage `json:"payload"`
 
+	TargetGroup string `json:"target_group,omitempty"`
+
 	ReplyQueueURL string `json:"reply_queue_url,omitempty"`
 }
 

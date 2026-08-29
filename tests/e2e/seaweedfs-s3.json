@@ -1,0 +1,20 @@
+{
+	"identities": [
+		{
+			"name": "yirang-e2e",
+			"credentials": [
+				{
+					"accessKey": "test",
+					"secretKey": "test"
+				}
+			],
+			"actions": [
+				"Admin",
+				"Read",
+				"Write",
+				"List",
+				"Tagging"
+			]
+		}
+	]
+}
