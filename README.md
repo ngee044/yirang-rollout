@@ -251,11 +251,11 @@ Agent는 재시도해도 결과가 같은 실패(계약 위반·해시 불일치
 
 | 항목 | 내용 |
 |------|------|
-| 언어 표준 | C++23 (CLI · Agent) + Go 1.23+ (REST API 서버 한 곳) |
+| 언어 표준 | C++23 (CLI · Agent) + Go 1.26+ (REST API 서버 한 곳) |
 | 빌드 시스템 | CMake 3.21+ (Ninja 권장) / Go 모듈 |
 | 패키지 관리 | vcpkg (`~/vcpkg`) / Go modules |
 | 지원 플랫폼 | Windows x64 / Linux x64 (macOS는 개발용) |
-| CppToolkit | submodule 포함 (`.cpptoolkit`) — Utilities · ThreadPool · AWSService |
+| CppToolkit | submodule 포함 (`.cpptoolkit`) — Utilities · AWSService |
 | 외부 인프라 | S3(또는 MinIO) · SQS |
 | 테스트 | Google Test + ctest (C++) / `go test -race` (Go) |
 
@@ -272,6 +272,8 @@ flowchart TD
         Artifact["Artifact<br/>S3 업로드·다운로드·객체 키"]
         Messaging["Messaging<br/>SQS 소비·발행"]
         Release["Release<br/>릴리스 매니페스트·SHA-256"]
+        Install["Install<br/>버전 디렉터리 설치·활성 포인터"]
+        Deploy["Deploy<br/>중단·교체·재시작·자동 롤백"]
         Process["Process<br/>프로세스 기동·중지·상태"]
         Health["Health<br/>프로세스·TCP·HTTP 헬스체크"]
     end
@@ -288,21 +290,27 @@ flowchart TD
     AgentCore --> Artifact
     AgentCore --> Messaging
     AgentCore --> Release
+    AgentCore --> Deploy
     AgentCore --> Utilities
+    CLICore --> Artifact
+    CLICore --> Release
     CLICore --> Utilities
+    Deploy --> Install
+    Deploy --> Process
+    Deploy --> Health
     Artifact --> AWSService
     Messaging --> AWSService
     Health --> Process
 ```
 
-화살표는 `target_link_libraries` 실측 방향(소비 → 피소비)입니다. `Process`·`Health`는 모듈로는 완성됐지만 아직 앱 실행 파일(`yirang`·`yirang-agent`)에는 링크되지 않았습니다 — 현재는 테스트에서만 소비됩니다(아래 [진행 상황](#진행-상황) 참조).
+화살표는 `target_link_libraries` 실측 방향(소비 → 피소비)입니다. `Process`·`Health`는 `Deploy`(배포 실행기)를 거쳐 Agent 실행 경로에 연결되어 있습니다 — 프로세스 중단·재시작과 readiness 판정·자동 롤백이 이 경로에서 동작합니다.
 
 | 경로 | 내용 |
 |------|------|
 | `CMakeLists.txt` | 루트 빌드 정의 (플랫폼 분기, 모듈 등록) |
 | `build.sh` | macOS / Linux 빌드 |
 | `vcpkg.json` | 의존성 매니페스트 (builtin-baseline 고정) |
-| `tests/` | gtest (108건) |
+| `tests/` | gtest (178건) |
 | `scripts/` | 부가 스크립트 (build.bat) |
 | `custom-triplets/` | macOS SDK 전달용 vcpkg triplet |
 | `.cpptoolkit/` | CppToolkit 서브모듈 |
@@ -362,7 +370,7 @@ Windows multi-config 생성기에서는 `build\out\<Config>\`, `build\lib\<Confi
 ## 테스트
 
 ```bash
-cd build && ctest --output-on-failure      # C++ 172건
+cd build && ctest --output-on-failure      # C++ 178건
 cd RestAPI && go test -race ./...          # Go 4패키지 53건
 ```
 
@@ -375,7 +383,7 @@ cd build && ctest -C Release --output-on-failure
 S3·SQS 통합 테스트 2건은 환경변수(`YIRANG_TEST_S3_ENDPOINT` 등)가 없으면 건너뜁니다. E2E 스택(SeaweedFS + ElasticMQ)을 띄우고 두 건까지 실행하려면:
 
 ```bash
-./tests/e2e/run_integration.sh            # 스택 기동 → 환경변수 주입 → ctest 172건 (건너뜀 0)
+./tests/e2e/run_integration.sh            # 스택 기동 → 환경변수 주입 → ctest 178건 (건너뜀 0)
 ./tests/e2e/run_scenarios.sh              # 배포·교체·자동 롤백·수동 롤백 시나리오 4건
 ./tests/e2e/stack.sh down                 # 스택 정리
 ```
@@ -417,10 +425,10 @@ flowchart LR
 | CLI (`DeployCLI/`) | ✅ 완료 — `deploy`·`command`·`results`. S3 업로드 + REST 호출 |
 | 릴리스 설치기 (`Install/`) | ✅ 완료 — 원자적 배치·활성 포인터 교체·되돌리기·정리 |
 | 배포 실행기 (`Deploy/`) | ✅ 완료 — 중단 → 교체 → 재시작 → readiness, 실패 시 자동 롤백 |
-| E2E 데모 환경 | ❌ 미착수 — 수동으로는 돌지만 자동 재현 수단이 없습니다 |
+| E2E 데모 환경 | ✅ 완료 — `tests/e2e/` (SeaweedFS + ElasticMQ). `run_integration.sh` 통합 게이트 + `run_scenarios.sh` 시나리오 4건 자동 재현 |
 | Windows 지원 | ❌ 미착수 — `Process/`의 Windows 구현이 없어 configure가 실패합니다 |
 
-**차단 요인이 없습니다.** 남은 작업(E2E 자동화·멱등 키·결과 집계·Windows 지원)은 서로 독립이라 병렬로 진행할 수 있습니다.
+**차단 요인이 없습니다.** 남은 작업(멱등 키·결과 집계·Windows 지원·CI)은 서로 독립이라 병렬로 진행할 수 있습니다.
 
 단계별 실측 판정(`file:line` 근거)과 세부 계획은 `docs/task_list.md` §1.2~1.5(로컬 전용)를 참조합니다.
 

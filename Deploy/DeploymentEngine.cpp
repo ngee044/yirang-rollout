@@ -237,6 +237,12 @@ namespace Deploy
 
 	auto DeploymentEngine::launch(const std::string& release_id) -> std::expected<void, std::string>
 	{
+		const auto configured = std::filesystem::path(service_.executable).lexically_normal();
+		if (configured.is_absolute() || (configured.begin() != configured.end() && *configured.begin() == ".."))
+		{
+			return std::unexpected(std::format("service.executable '{}' must be a relative path inside the release directory", service_.executable));
+		}
+
 		const auto release_root = std::filesystem::path(installer_->release_directory(release_id));
 		const auto executable = release_root / service_.executable;
 
