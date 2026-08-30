@@ -47,6 +47,10 @@ preflight() {
 		command -v "$tool" >/dev/null || abort "$tool 이 필요합니다."
 	done
 
+	if [ "$(id -u)" -eq 0 ]; then
+		abort "root 로 실행하지 마십시오 — TC-E2E-15 가 reboot_device 를 발행하므로 root 권한에서는 이 기기가 실제로 재부팅됩니다."
+	fi
+
 	if pgrep -f "$WORK_DIR" >/dev/null 2>&1; then
 		abort "이전 실행의 프로세스가 남아 있습니다. pkill -f '$WORK_DIR' 로 정리한 뒤 다시 실행하십시오."
 	fi
@@ -494,6 +498,50 @@ scenario_14() {
 	check "갱신한 설정이 서비스에 반영됨" "$(marker_of pc-001 | cut -d' ' -f3)" "updated" || return 1
 }
 
+scenario_15() {
+	note "TC-E2E-15 재부팅 명령 — 확인 절차·전달 경로·권한 가드 (비-root 실행이라 기기는 내려가지 않는다)"
+
+	local before_pid detail
+	before_pid="$(runtime_pid pc-001)"
+
+	if send_command reboot_device "" kiosk 2>/dev/null; then
+		note "  확인 없이 발행됐습니다 — 파괴적 명령은 --confirm 없이 거부되어야 합니다"
+		return 1
+	fi
+
+	send_command reboot_device "" kiosk --confirm reboot_device || return 1
+	wait_for_report ".device_id==\"pc-001\" and .command==\"reboot_device\" and .success==false" "pc-001 reboot_device 실패 보고(권한 가드)" || return 1
+
+	detail="$(report_detail ".device_id==\"pc-001\" and .command==\"reboot_device\"")"
+
+	check_contains "권한 가드가 사유를 알려줌" "$detail" "root privileges" || return 1
+	check "서비스가 계속 살아 있음" "$(alive "$before_pid")" "alive" || return 1
+	check "pid 가 그대로 (재부팅되지 않음)" "$(runtime_pid pc-001)" "$before_pid" || return 1
+}
+
+scenario_16() {
+	note "TC-E2E-16 받아둔 버전 정리 — clean_old_version (확인 필요 · 가동 중 서비스는 건드리지 않는다)"
+
+	local before_pid versions
+	before_pid="$(runtime_pid pc-001)"
+	versions="$WORK_DIR/devices/pc-001/versions"
+
+	check_differs "정리 전에는 받아둔 버전이 있음" "$(ls "$versions" 2>/dev/null | wc -l | tr -d ' ')" "0" || return 1
+
+	if send_command clean_old_version "" kiosk 2>/dev/null; then
+		note "  확인 없이 발행됐습니다 — 파괴적 명령은 --confirm 없이 거부되어야 합니다"
+		return 1
+	fi
+
+	send_command clean_old_version "" kiosk --confirm clean_old_version || return 1
+	wait_for_report ".device_id==\"pc-001\" and .command==\"clean_old_version\" and .success==true" "pc-001 clean_old_version" || return 1
+
+	check "받아둔 버전이 비워짐" "$(ls "$versions" 2>/dev/null | wc -l | tr -d ' ')" "0" || return 1
+	check "활성 릴리스는 그대로" "$(state_field pc-001 active)" "$V1_ID" || return 1
+	check "가동 중 서비스가 살아 있음" "$(alive "$before_pid")" "alive" || return 1
+	check "pid 가 그대로 (서비스 무영향)" "$(runtime_pid pc-001)" "$before_pid" || return 1
+}
+
 main() {
 	preflight
 
@@ -536,6 +584,8 @@ main() {
 		status=0; scenario_02 || status=1; record TC-E2E-02 "$status"
 		status=0; scenario_10 || status=1; record TC-E2E-10 "$status"
 		status=0; scenario_14 || status=1; record TC-E2E-14 "$status"
+		status=0; scenario_15 || status=1; record TC-E2E-15 "$status"
+		status=0; scenario_16 || status=1; record TC-E2E-16 "$status"
 	else
 		note "TC-E2E-01 이 실패해 후속 시나리오를 건너뜁니다(선행 릴리스가 없습니다)."
 	fi
@@ -548,7 +598,7 @@ main() {
 		return 1
 	fi
 
-	note "Phase B 시나리오 5건 전부 통과"
+	note "Phase B 시나리오 7건 전부 통과"
 }
 
 main "$@"

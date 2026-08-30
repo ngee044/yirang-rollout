@@ -395,7 +395,7 @@ S3·SQS 통합 테스트 2건은 환경변수(`YIRANG_TEST_S3_ENDPOINT` 등)가 
 
 ```bash
 ./tests/e2e/run_integration.sh            # 스택 기동 → 환경변수 주입 → ctest 189건 (건너뜀 0)
-./tests/e2e/run_scenarios.sh              # 배포·교체·자동/수동 롤백·원격 설정 갱신 시나리오 5건
+./tests/e2e/run_scenarios.sh              # 명령 8종을 덮는 시나리오 7건 (배포·교체·롤백·설정 갱신·재부팅·정리)
 ./tests/e2e/stack.sh down                 # 스택 정리
 ```
 
@@ -436,7 +436,7 @@ flowchart LR
 | CLI (`DeployCLI/`) | ✅ 완료 — `deploy`·`command`·`results`. S3 업로드 + REST 호출 |
 | 릴리스 설치기 (`RolloutKit/Install/`) | ✅ 완료 — 원자적 배치·활성 포인터 교체·되돌리기·정리 |
 | 배포 실행기 (`RolloutKit/Deploy/`) | ✅ 완료 — 중단 → 교체 → 재시작 → readiness, 실패 시 자동 롤백 |
-| E2E 데모 환경 | ✅ 완료 — `tests/e2e/` (SeaweedFS + ElasticMQ). `run_integration.sh` 통합 게이트 + `run_scenarios.sh` 시나리오 5건 자동 재현 |
+| E2E 데모 환경 | ✅ 완료 — `tests/e2e/` (SeaweedFS + ElasticMQ). `run_integration.sh` 통합 게이트 + `run_scenarios.sh` 시나리오 **7건**(명령 8종 전부) 자동 재현 |
 | Windows 지원 | ❌ 미착수 — `RolloutKit/Process/`의 Windows 구현이 없어 configure가 실패합니다 |
 
 **차단 요인이 없습니다.** 남은 작업(멱등 키·결과 집계·Windows 지원·CI)은 서로 독립이라 병렬로 진행할 수 있습니다.
