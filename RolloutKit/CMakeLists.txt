@@ -1,0 +1,7 @@
+add_subdirectory(Artifact)
+add_subdirectory(Messaging)
+add_subdirectory(Process)
+add_subdirectory(Health)
+add_subdirectory(Release)
+add_subdirectory(Install)
+add_subdirectory(Deploy)

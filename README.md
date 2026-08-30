@@ -88,7 +88,7 @@ sequenceDiagram
 - **멱등** — 같은 `release_id` 명령을 다시 받아도 결과가 같습니다.
 - **API 서버는 로컬 전용** — 인증이 없으며, 그 전제가 성립하도록 기본 루프백 바인딩을 강제합니다(아래 참조).
 
-> **타겟 PC의 S3 자격증명**: 현재 Agent는 SDK 기본 자격증명 공급자로 S3를 직접 읽습니다. pre-signed URL 발급(`presign`)은 `Artifact/` 경계에 구현되어 있으나 배포 경로에 연결되어 있지 않습니다. "타겟 PC에 비밀값을 두지 않는다"는 목표이지 현재 상태가 아닙니다.
+> **타겟 PC의 S3 자격증명**: 현재 Agent는 SDK 기본 자격증명 공급자로 S3를 직접 읽습니다. pre-signed URL 발급(`presign`)은 `RolloutKit/Artifact/` 경계에 구현되어 있으나 배포 경로에 연결되어 있지 않습니다. "타겟 PC에 비밀값을 두지 않는다"는 목표이지 현재 상태가 아닙니다.
 
 ## 보안 모델
 
@@ -268,7 +268,7 @@ flowchart TD
         CLIExe["yirang<br/>(DeployCLI/)"] --> CLICore["DeployCLICore"]
     end
 
-    subgraph libs["C++ 모듈 — 최상위 디렉터리 1개 = CMake 타겟 1개"]
+    subgraph libs["RolloutKit/ — 모듈 디렉터리 1개 = CMake 타겟 1개"]
         Artifact["Artifact<br/>S3 업로드·다운로드·객체 키"]
         Messaging["Messaging<br/>SQS 소비·발행"]
         Release["Release<br/>릴리스 매니페스트·SHA-256"]
@@ -308,6 +308,7 @@ flowchart TD
 | 경로 | 내용 |
 |------|------|
 | `CMakeLists.txt` | 루트 빌드 정의 (플랫폼 분기, 모듈 등록) |
+| `RolloutKit/` | 라이브러리 모듈 7개 (`Artifact`·`Messaging`·`Process`·`Health`·`Release`·`Install`·`Deploy`) |
 | `build.sh` | macOS / Linux 빌드 |
 | `vcpkg.json` | 의존성 매니페스트 (builtin-baseline 고정) |
 | `tests/` | gtest (178건) |
@@ -317,7 +318,7 @@ flowchart TD
 | `docs/` | 설계·검증 문서 (로컬 전용, .gitignore 대상) |
 | `.github/` | PR 템플릿 |
 
-C++ 모듈은 **최상위 디렉터리 1개 = CMake 타겟 1개**로 배치합니다. 소비 측은 경로 접두어 없이 `#include "ReleaseManifest.h"` 처럼 포함합니다(flat include). 앱 디렉터리(`YirangAgent/`·`DeployCLI/`)만 core 정적 라이브러리 + 얇은 실행 파일 구성이라 타겟이 2개입니다.
+C++ 라이브러리 모듈은 `RolloutKit/` 하위에 **디렉터리 1개 = CMake 타겟 1개**로 배치합니다(타겟명은 디렉터리명 그대로 — 경로를 합성하지 않습니다). 소비 측은 경로 접두어 없이 `#include "ReleaseManifest.h"` 처럼 포함합니다(flat include). 앱 디렉터리(`YirangAgent/`·`DeployCLI/`)만 core 정적 라이브러리 + 얇은 실행 파일 구성이라 타겟이 2개입니다.
 
 `RestAPI/`는 독립 Go 모듈이라 CMake 빌드와 서로를 요구하지 않습니다.
 
@@ -347,7 +348,7 @@ scripts\build.bat Debug --clean
 
 `build.bat`은 생성기를 지정하지 않으므로 Visual Studio multi-config 생성기가 선택됩니다. 이 경우 산출물 경로와 테스트 명령이 config 하위로 갈라집니다.
 
-> Windows 빌드는 아직 통과하지 않습니다. `Process/` 모듈의 Windows 구현(`CreateProcessW`·Job Objects)이 없어 `CMakeLists.txt`가 `WIN32`에서 명시적으로 실패합니다.
+> Windows 빌드는 아직 통과하지 않습니다. `RolloutKit/Process/` 모듈의 Windows 구현(`CreateProcessW`·Job Objects)이 없어 `CMakeLists.txt`가 `WIN32`에서 명시적으로 실패합니다.
 
 ### REST API 서버
 
@@ -415,18 +416,18 @@ flowchart LR
 
 | 모듈 | 상태 |
 |------|------|
-| S3 저장소 (`Artifact/`) | ✅ 완료 |
-| SQS 소비·발행 (`Messaging/`) | ✅ 완료 |
-| 릴리스 매니페스트 (`Release/`) | ✅ 완료 |
+| S3 저장소 (`RolloutKit/Artifact/`) | ✅ 완료 |
+| SQS 소비·발행 (`RolloutKit/Messaging/`) | ✅ 완료 |
+| 릴리스 매니페스트 (`RolloutKit/Release/`) | ✅ 완료 |
 | Agent 데몬 (`YirangAgent/`) | ✅ 완료 — 명령 5종 전부 동작 |
 | REST API 서버 (`RestAPI/`) | ✅ 완료 (인증은 의도적 제외, 상태 영속화 미구현) |
-| 프로세스 제어 (`Process/`) | ✅ 완료 (POSIX) — `Deploy/`를 통해 Agent 실행 경로에 연결됨 |
-| 헬스체크 (`Health/`) | ✅ 완료 — readiness 판정·자동 롤백에 사용 |
+| 프로세스 제어 (`RolloutKit/Process/`) | ✅ 완료 (POSIX) — `RolloutKit/Deploy/`를 통해 Agent 실행 경로에 연결됨 |
+| 헬스체크 (`RolloutKit/Health/`) | ✅ 완료 — readiness 판정·자동 롤백에 사용 |
 | CLI (`DeployCLI/`) | ✅ 완료 — `deploy`·`command`·`results`. S3 업로드 + REST 호출 |
-| 릴리스 설치기 (`Install/`) | ✅ 완료 — 원자적 배치·활성 포인터 교체·되돌리기·정리 |
-| 배포 실행기 (`Deploy/`) | ✅ 완료 — 중단 → 교체 → 재시작 → readiness, 실패 시 자동 롤백 |
+| 릴리스 설치기 (`RolloutKit/Install/`) | ✅ 완료 — 원자적 배치·활성 포인터 교체·되돌리기·정리 |
+| 배포 실행기 (`RolloutKit/Deploy/`) | ✅ 완료 — 중단 → 교체 → 재시작 → readiness, 실패 시 자동 롤백 |
 | E2E 데모 환경 | ✅ 완료 — `tests/e2e/` (SeaweedFS + ElasticMQ). `run_integration.sh` 통합 게이트 + `run_scenarios.sh` 시나리오 4건 자동 재현 |
-| Windows 지원 | ❌ 미착수 — `Process/`의 Windows 구현이 없어 configure가 실패합니다 |
+| Windows 지원 | ❌ 미착수 — `RolloutKit/Process/`의 Windows 구현이 없어 configure가 실패합니다 |
 
 **차단 요인이 없습니다.** 남은 작업(멱등 키·결과 집계·Windows 지원·CI)은 서로 독립이라 병렬로 진행할 수 있습니다.
 
