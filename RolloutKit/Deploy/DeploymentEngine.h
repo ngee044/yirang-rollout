@@ -28,6 +28,10 @@ namespace Deploy
 
 		auto start_active(void) -> std::expected<void, std::string>;
 
+		auto restart(void) -> std::expected<void, std::string>;
+
+		auto active_release_directory(void) const -> std::expected<std::string, std::string>;
+
 		auto stop(void) -> std::expected<void, std::string>;
 
 		auto running(void) -> bool;

@@ -17,11 +17,12 @@ namespace DeployCli
 {
 	namespace
 	{
-		const std::vector<std::string> agent_commands{ "download_version", "apply_version", "current_status", "clean_old_version", "rollback_version" };
+		const std::vector<std::string> agent_commands{ "download_version", "apply_version",		   "current_status",  "clean_old_version",
+													   "rollback_version", "update_configuration", "restart_service", "reboot_device" };
 
 		auto is_agent_command(const std::string& name) -> bool { return std::find(agent_commands.begin(), agent_commands.end(), name) != agent_commands.end(); }
 
-		const std::vector<std::string> destructive_commands{ "clean_old_version" };
+		const std::vector<std::string> destructive_commands{ "clean_old_version", "reboot_device" };
 
 		auto is_destructive_command(const std::string& name) -> bool
 		{
@@ -38,7 +39,7 @@ namespace DeployCli
 			return std::format("group '{}'", group);
 		}
 
-		auto parse_object(const std::string& text) -> std::expected<boost::json::object, std::string>
+		auto parse_object(const std::string& text, const char* label = "response") -> std::expected<boost::json::object, std::string>
 		{
 			boost::json::value parsed;
 			try
@@ -47,12 +48,12 @@ namespace DeployCli
 			}
 			catch (const std::exception& exception)
 			{
-				return std::unexpected(std::format("response is not valid JSON: {}", exception.what()));
+				return std::unexpected(std::format("{} is not valid JSON: {}", label, exception.what()));
 			}
 
 			if (!parsed.is_object())
 			{
-				return std::unexpected("response root is not a JSON object");
+				return std::unexpected(std::format("{} root is not a JSON object", label));
 			}
 
 			return parsed.as_object();
@@ -232,7 +233,30 @@ namespace DeployCli
 		}
 
 		boost::json::object payload;
-		if (arguments.size() > 1)
+		if (name == "update_configuration")
+		{
+			if (arguments.size() < 2)
+			{
+				return std::unexpected("update_configuration requires a configuration path relative to the release directory (yirang command update_configuration "
+									   "config/app.json --config_values '{\"key\":1}')");
+			}
+
+			const auto& values = configurations_.config_values();
+			if (values.empty())
+			{
+				return std::unexpected("update_configuration requires --config_values <json object>");
+			}
+
+			auto parsed = parse_object(values, "--config_values");
+			if (!parsed)
+			{
+				return std::unexpected(parsed.error());
+			}
+
+			payload["path"] = arguments.at(1);
+			payload["values"] = parsed.value();
+		}
+		else if (arguments.size() > 1)
 		{
 			payload["release_id"] = arguments.at(1);
 		}

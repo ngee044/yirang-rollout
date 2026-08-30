@@ -6,6 +6,7 @@
 
 #include "IArtifactStore.h"
 #include "IMessagePublisher.h"
+#include "ISystemControl.h"
 
 #include <cstdint>
 #include <expected>
@@ -37,7 +38,8 @@ namespace YirangAgent
 		AgentService(const AgentOptions& options,
 					 std::shared_ptr<Artifact::IArtifactStore> store,
 					 std::shared_ptr<Messaging::IMessagePublisher> publisher = nullptr,
-					 std::shared_ptr<Deploy::DeploymentEngine> engine = nullptr);
+					 std::shared_ptr<Deploy::DeploymentEngine> engine = nullptr,
+					 std::shared_ptr<Process::ISystemControl> system = nullptr);
 
 		auto handle(const std::string& raw_message) -> std::expected<void, std::string>;
 
@@ -51,6 +53,9 @@ namespace YirangAgent
 		auto current_status(const std::string& message) -> std::expected<void, std::string>;
 		auto clean_old_version(const std::string& message) -> std::expected<void, std::string>;
 		auto rollback_version(const std::string& message) -> std::expected<void, std::string>;
+		auto update_configuration(const std::string& message) -> std::expected<void, std::string>;
+		auto restart_service(const std::string& message) -> std::expected<void, std::string>;
+		auto reboot_device(const std::string& message) -> std::expected<void, std::string>;
 
 		auto version_directory(const std::string& release_id) const -> std::string;
 
@@ -65,6 +70,7 @@ namespace YirangAgent
 		std::shared_ptr<Artifact::IArtifactStore> store_;
 		std::shared_ptr<Messaging::IMessagePublisher> publisher_;
 		std::shared_ptr<Deploy::DeploymentEngine> engine_;
+		std::shared_ptr<Process::ISystemControl> system_;
 
 		std::map<std::string, std::function<std::expected<void, std::string>(const std::string&)>> messages_;
 

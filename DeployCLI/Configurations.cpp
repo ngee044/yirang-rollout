@@ -58,6 +58,7 @@ namespace DeployCli
 		, show_help_(false)
 		, show_version_(false)
 		, confirm_token_("")
+		, config_values_("")
 		, load_warning_(std::nullopt)
 	{
 		root_path_ = arguments.program_folder();
@@ -114,6 +115,8 @@ namespace DeployCli
 	auto Configurations::show_version(void) const -> bool { return show_version_; }
 
 	auto Configurations::confirm_token(void) const -> std::string { return confirm_token_; }
+
+	auto Configurations::config_values(void) const -> std::string { return config_values_; }
 
 	auto Configurations::load_warning(void) const -> std::optional<std::string> { return load_warning_; }
 
@@ -349,6 +352,12 @@ namespace DeployCli
 
 		show_help_ = arguments.to_string("--help") != std::nullopt;
 		show_version_ = arguments.to_string("--version") != std::nullopt;
+
+		auto configuration_values = arguments.to_string("--config_values");
+		if (configuration_values != std::nullopt)
+		{
+			config_values_ = configuration_values.value();
+		}
 
 		auto confirm_target = arguments.to_string("--confirm");
 		if (confirm_target != std::nullopt)

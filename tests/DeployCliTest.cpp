@@ -274,6 +274,52 @@ TEST(DeployCliTest, CommandReachesTheRestStageForSupportedNames)
 
 	ASSERT_FALSE(result.has_value());
 	EXPECT_NE(result.error().find("cannot reach"), std::string::npos) << result.error();
+
+	const auto restart = commands.run("command", { "restart_service" });
+	ASSERT_FALSE(restart.has_value());
+	EXPECT_NE(restart.error().find("cannot reach"), std::string::npos) << restart.error();
+}
+
+TEST(DeployCliTest, UpdateConfigurationNeedsAPathAndValuesBeforeTheRestStage)
+{
+	auto configurations = make_configurations({ "--control_plane_url", "http://127.0.0.1:1" });
+	Commands commands(*configurations, nullptr, unreachable_client());
+
+	const auto without_path = commands.run("command", { "update_configuration" });
+	ASSERT_FALSE(without_path.has_value());
+	EXPECT_NE(without_path.error().find("configuration path"), std::string::npos) << without_path.error();
+
+	const auto without_values = commands.run("command", { "update_configuration", "config/app.json" });
+	ASSERT_FALSE(without_values.has_value());
+	EXPECT_NE(without_values.error().find("--config_values"), std::string::npos) << without_values.error();
+}
+
+TEST(DeployCliTest, UpdateConfigurationRejectsValuesThatAreNotAJsonObject)
+{
+	auto configurations = make_configurations({ "--control_plane_url", "http://127.0.0.1:1", "--config_values", "[1,2,3]" });
+	Commands commands(*configurations, nullptr, unreachable_client());
+
+	const auto result = commands.run("command", { "update_configuration", "config/app.json" });
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("--config_values"), std::string::npos) << result.error();
+}
+
+TEST(DeployCliTest, RebootDeviceRequiresConfirmationLikeCleanOldVersion)
+{
+	auto configurations = make_configurations({ "--control_plane_url", "http://127.0.0.1:1", "--target_group", "kiosk" });
+
+	std::istringstream input("n\n");
+	std::ostringstream output;
+	auto confirmation = std::make_shared<Confirmation>("", true, input, output);
+
+	Commands commands(*configurations, nullptr, unreachable_client(), confirmation);
+
+	const auto result = commands.run("command", { "reboot_device" });
+
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("reboot_device"), std::string::npos) << result.error();
+	EXPECT_NE(output.str().find("reboot_device"), std::string::npos) << output.str();
 }
 
 TEST(RestClientTest, TrimsTrailingSlashFromBaseUrl)

@@ -5,6 +5,7 @@
 #include "Logger.h"
 #include "LogTypes.h"
 #include "PosixProcessSupervisor.h"
+#include "PosixSystemControl.h"
 #include "S3ArtifactStore.h"
 #include "SqsMessageConsumer.h"
 #include "SqsMessagePublisher.h"
@@ -152,7 +153,7 @@ auto main(int32_t argc, char* argv[]) -> int32_t
 			Logger::handle().write(LogTypes::Warning, "service_root or service.executable is not configured — apply_version and rollback_version will fail");
 		}
 
-		auto service = std::make_shared<AgentService>(make_agent_options(*configurations), store, publisher, engine);
+		auto service = std::make_shared<AgentService>(make_agent_options(*configurations), store, publisher, engine, std::make_shared<Process::PosixSystemControl>());
 
 		if (engine != nullptr)
 		{

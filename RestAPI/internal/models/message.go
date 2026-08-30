@@ -16,11 +16,14 @@ type AgentMessage struct {
 }
 
 const (
-	CommandDownloadVersion = "download_version"
-	CommandApplyVersion    = "apply_version"
-	CommandCurrentStatus   = "current_status"
-	CommandCleanOldVersion = "clean_old_version"
-	CommandRollbackVersion = "rollback_version"
+	CommandDownloadVersion     = "download_version"
+	CommandApplyVersion        = "apply_version"
+	CommandCurrentStatus       = "current_status"
+	CommandCleanOldVersion     = "clean_old_version"
+	CommandRollbackVersion     = "rollback_version"
+	CommandUpdateConfiguration = "update_configuration"
+	CommandRestartService      = "restart_service"
+	CommandRebootDevice        = "reboot_device"
 )
 
 var supportedCommands = []string{
@@ -29,6 +32,9 @@ var supportedCommands = []string{
 	CommandCurrentStatus,
 	CommandCleanOldVersion,
 	CommandRollbackVersion,
+	CommandUpdateConfiguration,
+	CommandRestartService,
+	CommandRebootDevice,
 }
 
 func SupportedCommands() []string { return slices.Clone(supportedCommands) }
@@ -48,6 +54,11 @@ type DownloadPayload struct {
 
 type VersionPayload struct {
 	ReleaseID string `json:"release_id"`
+}
+
+type ConfigurationPayload struct {
+	Path   string          `json:"path"`
+	Values json.RawMessage `json:"values"`
 }
 
 type Report struct {

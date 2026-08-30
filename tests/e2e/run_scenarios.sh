@@ -263,8 +263,11 @@ warm_up() {
 
 deploy_release() {
 	local payload="$1" group="$2" output id
+	local files="$payload/app.sh"
 
-	if ! output="$("$CLI" deploy --config_path "$CLI_CONFIG" --upload_file_list "$payload/app.sh" --target_group "$group" 2>&1)"; then
+	[ -f "$payload/app.json" ] && files="$files,$payload/app.json"
+
+	if ! output="$("$CLI" deploy --config_path "$CLI_CONFIG" --upload_file_list "$files" --target_group "$group" 2>&1)"; then
 		echo "$output" >&2
 		return 1
 	fi
@@ -285,11 +288,13 @@ deploy_release() {
 
 send_command() {
 	local name="$1" release_id="$2" group="$3" output
+	shift 3
 	local args=(command "$name")
 
 	[ -n "$release_id" ] && args+=("$release_id")
 	args+=(--config_path "$CLI_CONFIG")
 	[ -n "$group" ] && args+=(--target_group "$group")
+	args+=("$@")
 
 	if ! output="$("$CLI" "${args[@]}" 2>&1)"; then
 		echo "$output" >&2
@@ -462,6 +467,33 @@ scenario_10() {
 	check "marker 의 pid 가 새 pid" "$(marker_of pc-001 | cut -d' ' -f2)" "$after" || return 1
 }
 
+scenario_14() {
+	note "TC-E2E-14 원격 설정 갱신 — update_configuration 뒤 restart_service 로 적용"
+
+	local before after
+	before="$(runtime_pid pc-001)"
+
+	check "적용 전 라벨" "$(marker_of pc-001 | cut -d' ' -f3)" "initial" || return 1
+
+	send_command update_configuration app.json kiosk --config_values '{"label":"updated"}' || return 1
+	wait_for_report ".device_id==\"pc-001\" and .command==\"update_configuration\" and .success==true" "pc-001 update_configuration" || return 1
+
+	check "갱신만으로는 아직 구 라벨 (다음 기동 시 적용)" "$(marker_of pc-001 | cut -d' ' -f3)" "initial" || return 1
+	check "갱신이 프로세스를 건드리지 않음" "$(runtime_pid pc-001)" "$before" || return 1
+
+	send_command restart_service "" kiosk || return 1
+	wait_for_report ".device_id==\"pc-001\" and .command==\"restart_service\" and .success==true" "pc-001 restart_service" || return 1
+
+	after="$(runtime_pid pc-001)"
+
+	check_differs "재시작으로 pid 가 교체됨" "$after" "$before" || return 1
+	check "이전 프로세스는 종료됨" "$(alive "$before")" "dead" || return 1
+	check "재시작한 프로세스가 살아 있음" "$(alive "$after")" "alive" || return 1
+	check "릴리스는 그대로 v1" "$(marker_of pc-001 | cut -d' ' -f1)" "v1" || return 1
+	check "state.json active 도 그대로" "$(state_field pc-001 active)" "$V1_ID" || return 1
+	check "갱신한 설정이 서비스에 반영됨" "$(marker_of pc-001 | cut -d' ' -f3)" "updated" || return 1
+}
+
 main() {
 	preflight
 
@@ -503,6 +535,7 @@ main() {
 		status=0; scenario_09 || status=1; record TC-E2E-09 "$status"
 		status=0; scenario_02 || status=1; record TC-E2E-02 "$status"
 		status=0; scenario_10 || status=1; record TC-E2E-10 "$status"
+		status=0; scenario_14 || status=1; record TC-E2E-14 "$status"
 	else
 		note "TC-E2E-01 이 실패해 후속 시나리오를 건너뜁니다(선행 릴리스가 없습니다)."
 	fi
@@ -515,7 +548,7 @@ main() {
 		return 1
 	fi
 
-	note "Phase B 시나리오 4건 전부 통과"
+	note "Phase B 시나리오 5건 전부 통과"
 }
 
 main "$@"

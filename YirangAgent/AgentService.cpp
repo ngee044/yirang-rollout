@@ -6,7 +6,10 @@
 
 #include <boost/json.hpp>
 
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <thread>
 #include <format>
 
@@ -44,6 +47,100 @@ namespace YirangAgent
 			}
 
 			return parsed.as_object();
+		}
+
+		auto read_json_object(const std::string& path) -> std::expected<boost::json::object, std::string>
+		{
+			std::ifstream source(path, std::ios::in | std::ios::binary);
+			if (!source.is_open())
+			{
+				return std::unexpected(std::format("cannot open '{}'", path));
+			}
+
+			std::ostringstream buffer;
+			buffer << source.rdbuf();
+
+			boost::json::value parsed;
+			try
+			{
+				parsed = boost::json::parse(buffer.str());
+			}
+			catch (const std::exception& exception)
+			{
+				return std::unexpected(std::format("cannot parse '{}': {}", path, exception.what()));
+			}
+
+			if (!parsed.is_object())
+			{
+				return std::unexpected(std::format("'{}' is not a JSON object", path));
+			}
+
+			return parsed.as_object();
+		}
+
+		auto merge_object(boost::json::object& target, const boost::json::object& changes) -> uint32_t
+		{
+			uint32_t changed = 0;
+
+			for (const auto& [key, value] : changes)
+			{
+				auto* existing = target.if_contains(key);
+
+				if (existing != nullptr && existing->is_object() && value.is_object())
+				{
+					changed += merge_object(existing->as_object(), value.as_object());
+
+					continue;
+				}
+
+				if (existing != nullptr && *existing == value)
+				{
+					continue;
+				}
+
+				target[key] = value;
+				++changed;
+			}
+
+			return changed;
+		}
+
+		auto write_json_object(const std::string& path, const boost::json::object& document) -> std::expected<void, std::string>
+		{
+			const auto temporary = path + ".tmp";
+
+			{
+				std::ofstream sink(temporary, std::ios::out | std::ios::binary | std::ios::trunc);
+				if (!sink.is_open())
+				{
+					return std::unexpected(std::format("cannot open '{}' for writing", temporary));
+				}
+
+				sink << boost::json::serialize(document);
+				sink.flush();
+
+				if (!sink.good())
+				{
+					sink.close();
+
+					std::error_code ignored;
+					std::filesystem::remove(temporary, ignored);
+
+					return std::unexpected(std::format("cannot write '{}'", temporary));
+				}
+			}
+
+			std::error_code error;
+			std::filesystem::rename(temporary, path, error);
+			if (error)
+			{
+				std::error_code ignored;
+				std::filesystem::remove(temporary, ignored);
+
+				return std::unexpected(std::format("cannot replace '{}': {}", path, error.message()));
+			}
+
+			return {};
 		}
 
 		auto validated_release_id(const boost::json::object& object) -> std::expected<std::string, std::string>
@@ -93,11 +190,13 @@ namespace YirangAgent
 	AgentService::AgentService(const AgentOptions& options,
 							   std::shared_ptr<Artifact::IArtifactStore> store,
 							   std::shared_ptr<Messaging::IMessagePublisher> publisher,
-							   std::shared_ptr<Deploy::DeploymentEngine> engine)
+							   std::shared_ptr<Deploy::DeploymentEngine> engine,
+							   std::shared_ptr<Process::ISystemControl> system)
 		: options_(options)
 		, store_(std::move(store))
 		, publisher_(std::move(publisher))
 		, engine_(std::move(engine))
+		, system_(std::move(system))
 		, messages_()
 		, last_report_()
 		, failure_is_permanent_(false)
@@ -109,6 +208,9 @@ namespace YirangAgent
 		messages_.insert({ Commands::kCurrentStatus, std::bind(&AgentService::current_status, this, std::placeholders::_1) });
 		messages_.insert({ Commands::kCleanOldVersion, std::bind(&AgentService::clean_old_version, this, std::placeholders::_1) });
 		messages_.insert({ Commands::kRollbackVersion, std::bind(&AgentService::rollback_version, this, std::placeholders::_1) });
+		messages_.insert({ Commands::kUpdateConfiguration, std::bind(&AgentService::update_configuration, this, std::placeholders::_1) });
+		messages_.insert({ Commands::kRestartService, std::bind(&AgentService::restart_service, this, std::placeholders::_1) });
+		messages_.insert({ Commands::kRebootDevice, std::bind(&AgentService::reboot_device, this, std::placeholders::_1) });
 	}
 
 	auto AgentService::commands(void) const -> std::vector<std::string>
@@ -541,6 +643,109 @@ namespace YirangAgent
 		}
 
 		last_report_ = engine_->last_detail();
+		Logger::handle().write(LogTypes::Information, last_report_);
+
+		return {};
+	}
+
+	auto AgentService::update_configuration(const std::string& message) -> std::expected<void, std::string>
+	{
+		auto object = parse_object(message);
+		if (!object)
+		{
+			return permanent(object.error());
+		}
+
+		auto relative = read_string(object.value(), "path");
+		if (!relative)
+		{
+			return permanent(relative.error());
+		}
+
+		auto allowed = Deploy::validate_release_relative_path(relative.value(), "path");
+		if (!allowed)
+		{
+			return permanent(allowed.error());
+		}
+
+		const auto* values = object.value().if_contains("values");
+		if (values == nullptr || !values->is_object())
+		{
+			return permanent("payload requires a 'values' object");
+		}
+
+		if (engine_ == nullptr)
+		{
+			return permanent("deployment engine is not configured (service_root or service.executable is missing)");
+		}
+
+		auto release_root = engine_->active_release_directory();
+		if (!release_root)
+		{
+			return permanent(release_root.error());
+		}
+
+		const auto target = std::filesystem::path(release_root.value()) / relative.value();
+
+		std::error_code error;
+		if (!std::filesystem::is_regular_file(target, error))
+		{
+			return permanent(std::format("configuration '{}' is not a file in the active release", relative.value()));
+		}
+
+		auto document = read_json_object(target.string());
+		if (!document)
+		{
+			return permanent(document.error());
+		}
+
+		const auto changed = merge_object(document.value(), values->as_object());
+
+		auto written = write_json_object(target.string(), document.value());
+		if (!written)
+		{
+			return std::unexpected(written.error());
+		}
+
+		last_report_ = std::format("updated {} key(s) in '{}' — the service reads it on the next start (restart_service)", changed, relative.value());
+		Logger::handle().write(LogTypes::Information, last_report_);
+
+		return {};
+	}
+
+	auto AgentService::restart_service(const std::string& message) -> std::expected<void, std::string>
+	{
+		if (engine_ == nullptr)
+		{
+			return permanent("deployment engine is not configured (service_root or service.executable is missing)");
+		}
+
+		auto restarted = engine_->restart();
+		if (!restarted)
+		{
+			return permanent(restarted.error());
+		}
+
+		last_report_ = engine_->last_detail();
+		Logger::handle().write(LogTypes::Information, last_report_);
+
+		return {};
+	}
+
+	auto AgentService::reboot_device(const std::string& message) -> std::expected<void, std::string>
+	{
+		if (system_ == nullptr)
+		{
+			return permanent("rebooting is not available on this platform");
+		}
+
+		auto requested = system_->request_reboot();
+		if (!requested)
+		{
+			return permanent(requested.error());
+		}
+
+		last_report_ = std::format("reboot scheduled in {} minute(s)", Process::kRebootDelayMinutes);
 		Logger::handle().write(LogTypes::Information, last_report_);
 
 		return {};

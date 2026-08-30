@@ -49,6 +49,8 @@ namespace DeployCli
 		auto show_version(void) const -> bool;
 		auto confirm_token(void) const -> std::string;
 
+		auto config_values(void) const -> std::string;
+
 	private:
 		auto load(void) -> void;
 		auto parse(const Utilities::ArgumentParser& arguments) -> void;
@@ -79,6 +81,8 @@ namespace DeployCli
 		bool show_help_;
 		bool show_version_;
 		std::string confirm_token_;
+
+		std::string config_values_;
 
 		std::optional<std::string> load_warning_;
 	};

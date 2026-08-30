@@ -135,6 +135,21 @@ func (s *Service) Command(ctx context.Context, request CommandRequest) (*Publish
 		if err := json.Unmarshal(payload, &version); err != nil || version.ReleaseID == "" {
 			return nil, apierr.BadRequest("%s requires payload.release_id", request.Command)
 		}
+
+	case models.CommandUpdateConfiguration:
+		var configuration models.ConfigurationPayload
+		if err := json.Unmarshal(payload, &configuration); err != nil {
+			return nil, apierr.BadRequest("update_configuration payload must be an object with path and values")
+		}
+
+		if err := validateConfigurationPath(configuration.Path); err != nil {
+			return nil, err
+		}
+
+		var values map[string]any
+		if len(configuration.Values) == 0 || json.Unmarshal(configuration.Values, &values) != nil {
+			return nil, apierr.BadRequest("update_configuration requires payload.values as a JSON object")
+		}
 	}
 
 	return s.publish(ctx, request.Command, request.Group, payload)
@@ -250,6 +265,24 @@ func validateObjectKey(releaseID, installPath string, index int) error {
 	for _, segment := range strings.Split(installPath, "/") {
 		if segment == ".." {
 			return apierr.BadRequest("artifacts[%d].install_path must not contain '..': %q", index, installPath)
+		}
+	}
+	return nil
+}
+
+func validateConfigurationPath(value string) error {
+	if value == "" {
+		return apierr.BadRequest("update_configuration requires payload.path")
+	}
+	if strings.ContainsRune(value, '\\') {
+		return apierr.BadRequest("payload.path must use '/' as separator: %q", value)
+	}
+	if strings.HasPrefix(value, "/") || (len(value) >= 2 && value[1] == ':') {
+		return apierr.BadRequest("payload.path must be relative to the release directory: %q", value)
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == ".." {
+			return apierr.BadRequest("payload.path must not contain '..': %q", value)
 		}
 	}
 	return nil

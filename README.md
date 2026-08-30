@@ -207,6 +207,11 @@ yirang deploy                        # upload_file_list 를 S3 에 올리고 배
 yirang command current_status         # Agent 명령을 발행한다
 yirang command apply_version rel_1    # release_id 는 두 번째 위치 인자
 yirang results                        # 디바이스가 보고한 결과를 조회한다
+
+# 활성 릴리스 안의 JSON 설정을 부분 병합한다 (적용은 다음 서비스 기동 시)
+yirang command update_configuration app.json --config_values '{"label":"updated"}'
+yirang command restart_service         # 활성 릴리스를 중단 → 재기동 → 헬스체크
+yirang command reboot_device --confirm reboot_device    # 기기 재부팅 예약
 ```
 
 설정 파일 없이 인자만으로도 동작합니다.
@@ -236,12 +241,17 @@ yirang --control_plane_url http://127.0.0.1:8080 \
 | `current_status` | 디스크 용량·코어 수·받아둔 버전 목록 보고 |
 | `clean_old_version` | `version_root` 하위 정리 — **CLI가 확인을 요구합니다**(아래) |
 | `rollback_version` | 지정 버전으로 되돌리기 |
+| `update_configuration` | 활성 릴리스 안의 JSON 설정 파일을 부분 병합 — 적용은 다음 서비스 기동 시 |
+| `restart_service` | 활성 릴리스를 중단 → 재기동 → 헬스체크 (릴리스는 바뀌지 않음) |
+| `reboot_device` | 기기 재부팅 예약 — **CLI가 확인을 요구합니다** |
 
 `clean_old_version`은 대상 기기의 받아둔 버전을 **전부** 지우고, `target_group`이 비어 있으면 대상이 **등록된 전체 디바이스**입니다. 그래서 CLI가 발행 전에 확인을 받습니다 — 대화형 터미널에서는 명령 이름(`clean_old_version`)을 그대로 입력해야 하고, 파이프·CI처럼 터미널이 아니면 `--confirm clean_old_version`이 없으면 거부합니다.
 
 ```bash
 yirang command clean_old_version --confirm clean_old_version    # 비대화형(스크립트·CI)
 ```
+
+`reboot_device`도 같은 이유로 확인 대상입니다 — `target_group`이 비면 플릿 전체가 내려가고, 재부팅은 되돌릴 수 없습니다.
 
 가드는 CLI에만 있습니다. REST API를 직접 호출하면 확인 없이 발행됩니다.
 
@@ -311,7 +321,7 @@ flowchart TD
 | `RolloutKit/` | 라이브러리 모듈 7개 (`Artifact`·`Messaging`·`Process`·`Health`·`Release`·`Install`·`Deploy`) |
 | `build.sh` | macOS / Linux 빌드 |
 | `vcpkg.json` | 의존성 매니페스트 (builtin-baseline 고정) |
-| `tests/` | gtest (178건) |
+| `tests/` | gtest (189건) |
 | `scripts/` | 부가 스크립트 (build.bat) |
 | `custom-triplets/` | macOS SDK 전달용 vcpkg triplet |
 | `.cpptoolkit/` | CppToolkit 서브모듈 |
@@ -371,7 +381,7 @@ Windows multi-config 생성기에서는 `build\out\<Config>\`, `build\lib\<Confi
 ## 테스트
 
 ```bash
-cd build && ctest --output-on-failure      # C++ 178건
+cd build && ctest --output-on-failure      # C++ 189건
 cd RestAPI && go test -race ./...          # Go 4패키지 53건
 ```
 
@@ -384,8 +394,8 @@ cd build && ctest -C Release --output-on-failure
 S3·SQS 통합 테스트 2건은 환경변수(`YIRANG_TEST_S3_ENDPOINT` 등)가 없으면 건너뜁니다. E2E 스택(SeaweedFS + ElasticMQ)을 띄우고 두 건까지 실행하려면:
 
 ```bash
-./tests/e2e/run_integration.sh            # 스택 기동 → 환경변수 주입 → ctest 178건 (건너뜀 0)
-./tests/e2e/run_scenarios.sh              # 배포·교체·자동 롤백·수동 롤백 시나리오 4건
+./tests/e2e/run_integration.sh            # 스택 기동 → 환경변수 주입 → ctest 189건 (건너뜀 0)
+./tests/e2e/run_scenarios.sh              # 배포·교체·자동/수동 롤백·원격 설정 갱신 시나리오 5건
 ./tests/e2e/stack.sh down                 # 스택 정리
 ```
 
@@ -419,14 +429,14 @@ flowchart LR
 | S3 저장소 (`RolloutKit/Artifact/`) | ✅ 완료 |
 | SQS 소비·발행 (`RolloutKit/Messaging/`) | ✅ 완료 |
 | 릴리스 매니페스트 (`RolloutKit/Release/`) | ✅ 완료 |
-| Agent 데몬 (`YirangAgent/`) | ✅ 완료 — 명령 5종 전부 동작 |
+| Agent 데몬 (`YirangAgent/`) | ✅ 완료 — 명령 8종 전부 동작 |
 | REST API 서버 (`RestAPI/`) | ✅ 완료 (인증은 의도적 제외, 상태 영속화 미구현) |
 | 프로세스 제어 (`RolloutKit/Process/`) | ✅ 완료 (POSIX) — `RolloutKit/Deploy/`를 통해 Agent 실행 경로에 연결됨 |
 | 헬스체크 (`RolloutKit/Health/`) | ✅ 완료 — readiness 판정·자동 롤백에 사용 |
 | CLI (`DeployCLI/`) | ✅ 완료 — `deploy`·`command`·`results`. S3 업로드 + REST 호출 |
 | 릴리스 설치기 (`RolloutKit/Install/`) | ✅ 완료 — 원자적 배치·활성 포인터 교체·되돌리기·정리 |
 | 배포 실행기 (`RolloutKit/Deploy/`) | ✅ 완료 — 중단 → 교체 → 재시작 → readiness, 실패 시 자동 롤백 |
-| E2E 데모 환경 | ✅ 완료 — `tests/e2e/` (SeaweedFS + ElasticMQ). `run_integration.sh` 통합 게이트 + `run_scenarios.sh` 시나리오 4건 자동 재현 |
+| E2E 데모 환경 | ✅ 완료 — `tests/e2e/` (SeaweedFS + ElasticMQ). `run_integration.sh` 통합 게이트 + `run_scenarios.sh` 시나리오 5건 자동 재현 |
 | Windows 지원 | ❌ 미착수 — `RolloutKit/Process/`의 Windows 구현이 없어 configure가 실패합니다 |
 
 **차단 요인이 없습니다.** 남은 작업(멱등 키·결과 집계·Windows 지원·CI)은 서로 독립이라 병렬로 진행할 수 있습니다.

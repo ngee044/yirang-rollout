@@ -2,12 +2,15 @@
 
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <string>
 #include <vector>
 
 namespace Deploy
 {
 	inline constexpr auto kNoActiveRelease = "no active release to start";
+
+	auto validate_release_relative_path(const std::string& path, const std::string& label) -> std::expected<void, std::string>;
 
 	struct ServiceSpec
 	{

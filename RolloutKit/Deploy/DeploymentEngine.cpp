@@ -242,6 +242,22 @@ namespace Deploy
 		return clear_record();
 	}
 
+	auto validate_release_relative_path(const std::string& path, const std::string& label) -> std::expected<void, std::string>
+	{
+		if (path.empty())
+		{
+			return std::unexpected(std::format("{} is empty", label));
+		}
+
+		const auto normalized = std::filesystem::path(path).lexically_normal();
+		if (normalized.has_root_path() || *normalized.begin() == "..")
+		{
+			return std::unexpected(std::format("{} '{}' must be a relative path inside the release directory", label, path));
+		}
+
+		return {};
+	}
+
 	auto DeploymentEngine::validate_service_executable(void) const -> std::expected<void, std::string>
 	{
 		if (service_.executable.empty())
@@ -249,11 +265,75 @@ namespace Deploy
 			return std::unexpected("service.executable is not configured — the agent does not know what to run");
 		}
 
-		const auto configured = std::filesystem::path(service_.executable).lexically_normal();
-		if (configured.has_root_path() || *configured.begin() == "..")
+		return validate_release_relative_path(service_.executable, "service.executable");
+	}
+
+	auto DeploymentEngine::active_release_directory(void) const -> std::expected<std::string, std::string>
+	{
+		if (installer_ == nullptr)
 		{
-			return std::unexpected(std::format("service.executable '{}' must be a relative path inside the release directory", service_.executable));
+			return std::unexpected("deployment engine is not configured");
 		}
+
+		auto current = installer_->state();
+		if (!current)
+		{
+			return std::unexpected(current.error());
+		}
+
+		if (current.value().active.empty())
+		{
+			return std::unexpected(kNoActiveRelease);
+		}
+
+		return installer_->release_directory(current.value().active);
+	}
+
+	auto DeploymentEngine::restart(void) -> std::expected<void, std::string>
+	{
+		if (installer_ == nullptr || supervisor_ == nullptr)
+		{
+			return std::unexpected("deployment engine is not configured");
+		}
+
+		auto executable_valid = validate_service_executable();
+		if (!executable_valid)
+		{
+			return std::unexpected(executable_valid.error());
+		}
+
+		auto current = installer_->state();
+		if (!current)
+		{
+			return std::unexpected(current.error());
+		}
+
+		if (current.value().active.empty())
+		{
+			return std::unexpected(kNoActiveRelease);
+		}
+
+		const auto& release_id = current.value().active;
+
+		auto stopped = stop();
+		if (!stopped)
+		{
+			return std::unexpected(std::format("cannot stop the running service: {}", stopped.error()));
+		}
+
+		auto launched = launch(release_id);
+		if (!launched)
+		{
+			return std::unexpected(std::format("'{}' did not restart: {}", release_id, launched.error()));
+		}
+
+		auto ready = await_ready();
+		if (!ready)
+		{
+			return std::unexpected(std::format("'{}' restarted but did not become ready: {}", release_id, ready.error()));
+		}
+
+		last_detail_ = std::format("restarted release '{}'", release_id);
 
 		return {};
 	}

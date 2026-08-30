@@ -22,6 +22,9 @@ namespace YirangAgent
 		inline constexpr auto kCurrentStatus = "current_status";
 		inline constexpr auto kCleanOldVersion = "clean_old_version";
 		inline constexpr auto kRollbackVersion = "rollback_version";
+		inline constexpr auto kUpdateConfiguration = "update_configuration";
+		inline constexpr auto kRestartService = "restart_service";
+		inline constexpr auto kRebootDevice = "reboot_device";
 	}
 
 	auto parse_agent_message(const std::string& text) -> std::expected<AgentMessage, std::string>;

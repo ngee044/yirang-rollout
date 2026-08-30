@@ -371,6 +371,52 @@ TEST(DeploymentEngineTest, ApplyRejectsAnExecutablePathThatEscapesTheRelease)
 	EXPECT_TRUE(fixture.supervisor->stopped().empty()) << "설정 오류인데 서비스를 내렸다";
 }
 
+TEST(DeploymentEngineTest, RestartStopsAndStartsTheActiveRelease)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+
+	const auto starts_before = fixture.supervisor->started().size();
+	const auto stops_before = fixture.supervisor->stopped().size();
+
+	const auto restarted = fixture.engine->restart();
+	ASSERT_TRUE(restarted.has_value()) << (restarted.has_value() ? "" : restarted.error());
+
+	EXPECT_EQ(fixture.supervisor->stopped().size(), stops_before + 1) << "재시작이 기존 인스턴스를 내리지 않았다";
+	EXPECT_EQ(fixture.supervisor->started().size(), starts_before + 1);
+
+	auto state = fixture.installer->state();
+	ASSERT_TRUE(state.has_value());
+	EXPECT_EQ(state.value().active, "rel_1") << "재시작이 활성 릴리스를 바꿨다";
+}
+
+TEST(DeploymentEngineTest, RestartFailsWhenNoReleaseIsActive)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	const auto restarted = fixture.engine->restart();
+
+	ASSERT_FALSE(restarted.has_value());
+	EXPECT_EQ(restarted.error(), kNoActiveRelease);
+}
+
+TEST(DeploymentEngineTest, ActiveReleaseDirectoryPointsAtTheActiveRelease)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	EXPECT_FALSE(fixture.engine->active_release_directory().has_value()) << "활성 릴리스가 없는데 경로를 돌려줬다";
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+
+	const auto directory = fixture.engine->active_release_directory();
+	ASSERT_TRUE(directory.has_value()) << (directory.has_value() ? "" : directory.error());
+	EXPECT_EQ(directory.value(), fixture.installer->release_directory("rel_1"));
+}
+
 TEST(DeploymentEngineTest, RollbackToSwitchesAndRestarts)
 {
 	TemporaryTree tree;

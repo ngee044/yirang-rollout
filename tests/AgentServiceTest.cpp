@@ -6,10 +6,15 @@
 #include "PosixProcessSupervisor.h"
 #include "IMessagePublisher.h"
 
+#include "ISystemControl.h"
+
+#include <boost/json.hpp>
+
 #include <algorithm>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <random>
 
@@ -102,6 +107,29 @@ namespace
 		int count_{ 0 };
 	};
 
+	class RecordingSystemControl : public Process::ISystemControl
+	{
+	public:
+		auto request_reboot(void) -> std::expected<void, std::string> override
+		{
+			++count_;
+
+			if (!failure_.empty())
+			{
+				return std::unexpected(failure_);
+			}
+
+			return {};
+		}
+
+		auto fail_with(const std::string& reason) -> void { failure_ = reason; }
+		auto count(void) const -> int { return count_; }
+
+	private:
+		int count_{ 0 };
+		std::string failure_;
+	};
+
 	class FailingStore : public Artifact::IArtifactStore
 	{
 	public:
@@ -173,8 +201,9 @@ TEST(AgentServiceTest, RegistersEverySupportedCommand)
 
 	const auto names = service.commands();
 
-	EXPECT_EQ(names.size(), 5u);
-	for (const auto* expected : { Commands::kDownloadVersion, Commands::kApplyVersion, Commands::kCurrentStatus, Commands::kCleanOldVersion, Commands::kRollbackVersion })
+	EXPECT_EQ(names.size(), 8u);
+	for (const auto* expected : { Commands::kDownloadVersion, Commands::kApplyVersion, Commands::kCurrentStatus, Commands::kCleanOldVersion, Commands::kRollbackVersion,
+								  Commands::kUpdateConfiguration, Commands::kRestartService, Commands::kRebootDevice })
 	{
 		EXPECT_NE(std::find(names.begin(), names.end(), std::string(expected)), names.end()) << expected;
 	}
@@ -288,6 +317,141 @@ TEST(AgentServiceTest, ApplyAndRollbackAreConsumedWhenTheEngineIsNotConfigured)
 	EXPECT_TRUE(service.handle(envelope(Commands::kApplyVersion, R"({"release_id":"rel_absent"})")).has_value());
 	EXPECT_NE(publisher->body().find("deployment engine is not configured"), std::string::npos) << publisher->body();
 	EXPECT_EQ(publisher->count(), 2);
+	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
+}
+
+TEST(AgentServiceTest, UpdateConfigurationMergesValuesIntoTheActiveRelease)
+{
+	TemporaryTree tree;
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	const auto staging = std::filesystem::path(tree.make_version("rel_1"));
+
+	std::error_code error;
+	std::filesystem::create_directories(staging / "config", error);
+	{
+		std::ofstream stream(staging / "config" / "app.json", std::ios::binary);
+		stream << R"({"endpoint":"https://old","retries":1,"nested":{"a":1,"b":2}})";
+	}
+
+	Install::InstallOptions install_options;
+	install_options.service_root = tree.service_root();
+
+	auto installer = std::make_shared<Install::ReleaseInstaller>(install_options);
+	ASSERT_TRUE(installer->install("rel_1", staging.string()).has_value());
+	ASSERT_TRUE(installer->activate("rel_1").has_value());
+
+	Deploy::ServiceSpec spec;
+	spec.executable = "app.exe";
+
+	auto engine = std::make_shared<Deploy::DeploymentEngine>(installer, std::make_shared<Process::PosixProcessSupervisor>(), spec, Health::HealthCheckSpec{});
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.service_root = tree.service_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher, engine);
+
+	const auto payload = R"({"path":"config/app.json","values":{"endpoint":"https://new","nested":{"b":9}}})";
+	EXPECT_TRUE(service.handle(envelope(Commands::kUpdateConfiguration, payload)).has_value());
+	EXPECT_NE(publisher->body().find("\"success\":true"), std::string::npos) << publisher->body();
+
+	std::ifstream stream(std::filesystem::path(installer->release_directory("rel_1")) / "config" / "app.json", std::ios::binary);
+	std::ostringstream buffer;
+	buffer << stream.rdbuf();
+
+	const auto document = boost::json::parse(buffer.str()).as_object();
+	EXPECT_EQ(document.at("endpoint").as_string(), "https://new");
+	EXPECT_EQ(document.at("retries").as_int64(), 1) << "병합이 건드리지 않은 키를 잃었다";
+	EXPECT_EQ(document.at("nested").as_object().at("a").as_int64(), 1) << "중첩 객체가 통째로 교체됐다";
+	EXPECT_EQ(document.at("nested").as_object().at("b").as_int64(), 9);
+}
+
+TEST(AgentServiceTest, UpdateConfigurationRejectsAPathThatEscapesTheRelease)
+{
+	TemporaryTree tree;
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	const auto staging = std::filesystem::path(tree.make_version("rel_1"));
+
+	Install::InstallOptions install_options;
+	install_options.service_root = tree.service_root();
+
+	auto installer = std::make_shared<Install::ReleaseInstaller>(install_options);
+	ASSERT_TRUE(installer->install("rel_1", staging.string()).has_value());
+	ASSERT_TRUE(installer->activate("rel_1").has_value());
+
+	Deploy::ServiceSpec spec;
+	spec.executable = "app.exe";
+
+	auto engine = std::make_shared<Deploy::DeploymentEngine>(installer, std::make_shared<Process::PosixProcessSupervisor>(), spec, Health::HealthCheckSpec{});
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.service_root = tree.service_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher, engine);
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kUpdateConfiguration, R"({"path":"../../escape.json","values":{"a":1}})")).has_value());
+	EXPECT_NE(publisher->body().find("inside the release"), std::string::npos) << publisher->body();
+	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
+}
+
+TEST(AgentServiceTest, RestartAndRebootAreConsumedWhenTheirDependenciesAreMissing)
+{
+	TemporaryTree tree;
+	auto publisher = std::make_shared<RecordingPublisher>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher);
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kRestartService, "{}")).has_value());
+	EXPECT_NE(publisher->body().find("deployment engine is not configured"), std::string::npos) << publisher->body();
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kRebootDevice, "{}")).has_value());
+	EXPECT_NE(publisher->body().find("rebooting is not available"), std::string::npos) << publisher->body();
+}
+
+TEST(AgentServiceTest, RebootDeviceReportsBeforeTheDeviceGoesDown)
+{
+	TemporaryTree tree;
+	auto publisher = std::make_shared<RecordingPublisher>();
+	auto system = std::make_shared<RecordingSystemControl>();
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher, nullptr, system);
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kRebootDevice, "{}")).has_value());
+
+	EXPECT_EQ(system->count(), 1);
+	EXPECT_EQ(publisher->count(), 1) << "재부팅 전에 결과를 보고하지 않았다";
+	EXPECT_NE(publisher->body().find("\"success\":true"), std::string::npos) << publisher->body();
+	EXPECT_NE(publisher->body().find("reboot scheduled"), std::string::npos) << publisher->body();
+}
+
+TEST(AgentServiceTest, RebootDeviceIsConsumedWhenTheSystemRefuses)
+{
+	TemporaryTree tree;
+	auto publisher = std::make_shared<RecordingPublisher>();
+	auto system = std::make_shared<RecordingSystemControl>();
+	system->fail_with("rebooting requires root privileges");
+
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.result_queue_url = "https://sqs.example/results";
+
+	AgentService service(options, nullptr, publisher, nullptr, system);
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kRebootDevice, "{}")).has_value());
+	EXPECT_NE(publisher->body().find("requires root privileges"), std::string::npos) << publisher->body();
 	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
 }
 
