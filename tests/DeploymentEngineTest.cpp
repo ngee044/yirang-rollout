@@ -347,6 +347,30 @@ TEST(DeploymentEngineTest, ApplyRequiresAConfiguredExecutable)
 	EXPECT_NE(applied.error().find("service.executable"), std::string::npos);
 }
 
+TEST(DeploymentEngineTest, ApplyRejectsAnAbsoluteExecutablePath)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree, "/bin/echo");
+
+	const auto applied = fixture.engine->apply("rel_1", tree.stage("rel_1"));
+
+	ASSERT_FALSE(applied.has_value());
+	EXPECT_NE(applied.error().find("inside the release"), std::string::npos) << applied.error();
+	EXPECT_TRUE(fixture.supervisor->stopped().empty()) << "설정 오류인데 서비스를 내렸다";
+}
+
+TEST(DeploymentEngineTest, ApplyRejectsAnExecutablePathThatEscapesTheRelease)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree, "../escape.exe");
+
+	const auto applied = fixture.engine->apply("rel_1", tree.stage("rel_1"));
+
+	ASSERT_FALSE(applied.has_value());
+	EXPECT_NE(applied.error().find("inside the release"), std::string::npos) << applied.error();
+	EXPECT_TRUE(fixture.supervisor->stopped().empty()) << "설정 오류인데 서비스를 내렸다";
+}
+
 TEST(DeploymentEngineTest, RollbackToSwitchesAndRestarts)
 {
 	TemporaryTree tree;

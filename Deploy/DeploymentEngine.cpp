@@ -44,9 +44,10 @@ namespace Deploy
 			return std::unexpected("deployment engine is not configured");
 		}
 
-		if (service_.executable.empty())
+		auto executable_valid = validate_service_executable();
+		if (!executable_valid)
 		{
-			return std::unexpected("service.executable is not configured — the agent does not know what to run");
+			return std::unexpected(executable_valid.error());
 		}
 
 		auto installed = installer_->install(release_id, source_directory);
@@ -100,6 +101,12 @@ namespace Deploy
 		if (installer_ == nullptr || supervisor_ == nullptr)
 		{
 			return std::unexpected("deployment engine is not configured");
+		}
+
+		auto executable_valid = validate_service_executable();
+		if (!executable_valid)
+		{
+			return std::unexpected(executable_valid.error());
 		}
 
 		std::error_code error;
@@ -235,8 +242,30 @@ namespace Deploy
 		return clear_record();
 	}
 
+	auto DeploymentEngine::validate_service_executable(void) const -> std::expected<void, std::string>
+	{
+		if (service_.executable.empty())
+		{
+			return std::unexpected("service.executable is not configured — the agent does not know what to run");
+		}
+
+		const auto configured = std::filesystem::path(service_.executable).lexically_normal();
+		if (configured.has_root_path() || *configured.begin() == "..")
+		{
+			return std::unexpected(std::format("service.executable '{}' must be a relative path inside the release directory", service_.executable));
+		}
+
+		return {};
+	}
+
 	auto DeploymentEngine::launch(const std::string& release_id) -> std::expected<void, std::string>
 	{
+		auto executable_valid = validate_service_executable();
+		if (!executable_valid)
+		{
+			return std::unexpected(executable_valid.error());
+		}
+
 		const auto release_root = std::filesystem::path(installer_->release_directory(release_id));
 		const auto executable = release_root / service_.executable;
 

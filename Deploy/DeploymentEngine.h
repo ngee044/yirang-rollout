@@ -35,6 +35,7 @@ namespace Deploy
 		auto last_detail(void) const -> std::string;
 
 	private:
+		auto validate_service_executable(void) const -> std::expected<void, std::string>;
 		auto launch(const std::string& release_id) -> std::expected<void, std::string>;
 		auto await_ready(void) -> std::expected<void, std::string>;
 		auto make_probe(void) -> std::shared_ptr<Health::IHealthProbe>;
