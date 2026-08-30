@@ -356,6 +356,7 @@ TEST(DeploymentEngineTest, ApplyRejectsAnAbsoluteExecutablePath)
 
 	ASSERT_FALSE(applied.has_value());
 	EXPECT_NE(applied.error().find("inside the release"), std::string::npos) << applied.error();
+	EXPECT_TRUE(fixture.supervisor->stopped().empty()) << "설정 오류인데 서비스를 내렸다";
 }
 
 TEST(DeploymentEngineTest, ApplyRejectsAnExecutablePathThatEscapesTheRelease)
@@ -367,6 +368,7 @@ TEST(DeploymentEngineTest, ApplyRejectsAnExecutablePathThatEscapesTheRelease)
 
 	ASSERT_FALSE(applied.has_value());
 	EXPECT_NE(applied.error().find("inside the release"), std::string::npos) << applied.error();
+	EXPECT_TRUE(fixture.supervisor->stopped().empty()) << "설정 오류인데 서비스를 내렸다";
 }
 
 TEST(DeploymentEngineTest, RollbackToSwitchesAndRestarts)
