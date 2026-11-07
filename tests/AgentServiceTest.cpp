@@ -284,6 +284,60 @@ TEST(AgentServiceTest, CleanOldVersionRefusesAndConsumesWhenRootsAreIdentical)
 	EXPECT_TRUE(std::filesystem::exists(tree.version_root() + "/rel_1"));
 }
 
+TEST(AgentServiceTest, CleanOldVersionPreservesNestedServiceAndState)
+{
+	TemporaryTree tree;
+	const auto release = tree.make_version("service/releases/active");
+	const auto state_path = std::filesystem::path(tree.version_root()) / "service/state.json";
+	std::ofstream(state_path) << R"({"active":"active"})";
+	auto publisher = std::make_shared<RecordingPublisher>();
+	AgentOptions options;
+	options.version_root = tree.version_root() + "/";
+	options.service_root = tree.version_root() + "/service";
+	options.result_queue_url = "https://sqs.example/results";
+	AgentService service(options, nullptr, publisher);
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kCleanOldVersion)).has_value());
+	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
+	EXPECT_TRUE(std::filesystem::exists(state_path));
+	EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(release) / "app.exe"));
+}
+
+TEST(AgentServiceTest, CleanOldVersionRejectsServiceSymlinkInsideCache)
+{
+	TemporaryTree tree;
+	const auto release = tree.make_version("rel_1");
+	std::filesystem::create_directory_symlink(tree.version_root(), tree.service_root());
+	auto publisher = std::make_shared<RecordingPublisher>();
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.service_root = tree.service_root() + "/rel_1";
+	options.result_queue_url = "https://sqs.example/results";
+	AgentService service(options, nullptr, publisher);
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kCleanOldVersion)).has_value());
+	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
+	EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(release) / "app.exe"));
+}
+
+TEST(AgentServiceTest, CleanOldVersionPreservesReleasesAliasedIntoCache)
+{
+	TemporaryTree tree;
+	const auto release = tree.make_version("active");
+	std::filesystem::create_directories(tree.service_root());
+	std::filesystem::create_directory_symlink(tree.version_root(), std::filesystem::path(tree.service_root()) / "releases");
+	auto publisher = std::make_shared<RecordingPublisher>();
+	AgentOptions options;
+	options.version_root = tree.version_root();
+	options.service_root = tree.service_root();
+	options.result_queue_url = "https://sqs.example/results";
+	AgentService service(options, nullptr, publisher);
+
+	EXPECT_TRUE(service.handle(envelope(Commands::kCleanOldVersion)).has_value());
+	EXPECT_NE(publisher->body().find("\"success\":false"), std::string::npos);
+	EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(release) / "app.exe"));
+}
+
 TEST(AgentServiceTest, CurrentStatusReportsDiskAndVersions)
 {
 	TemporaryTree tree;

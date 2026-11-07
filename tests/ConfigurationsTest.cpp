@@ -196,6 +196,43 @@ TEST(ConfigurationsTest, ValidateRequiredRejectsIdenticalRoots)
 	EXPECT_NE(result.error().find("service_root"), std::string::npos);
 }
 
+TEST(ConfigurationsTest, ValidateRequiredRejectsServiceInsideVersionRoot)
+{
+	ArgumentFixture arguments({ "--config_path", absent_config_path(), "--device_id", "pc-001", "--queue_url", "https://sqs.example/q", "--s3_bucket", "bucket",
+								"--version_root", "/tmp/yirang-review-root/", "--service_root", "/tmp/yirang-review-root/service" });
+	const Configurations configurations(arguments.parser());
+	const auto result = configurations.validate_required();
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("service_root"), std::string::npos);
+}
+
+TEST(ConfigurationsTest, ValidateRequiredAllowsSiblingRootsWithSharedNamePrefix)
+{
+	ArgumentFixture arguments({ "--config_path", absent_config_path(), "--device_id", "pc-001", "--queue_url", "https://sqs.example/q", "--s3_bucket", "bucket",
+								"--version_root", "/tmp/yirang-review-root", "--service_root", "/tmp/yirang-review-root-service" });
+	const Configurations configurations(arguments.parser());
+	EXPECT_TRUE(configurations.validate_required().has_value());
+}
+
+TEST(ConfigurationsTest, ValidateRequiredRejectsCacheInsideInstalledReleases)
+{
+	for (const auto& version_root : { "/tmp/yirang-review-service/releases", "/tmp/yirang-review-service/releases/active" })
+	{
+		ArgumentFixture arguments({ "--config_path", absent_config_path(), "--device_id", "pc-001", "--queue_url", "https://sqs.example/q", "--s3_bucket", "bucket",
+									"--version_root", version_root, "--service_root", "/tmp/yirang-review-service" });
+		const Configurations configurations(arguments.parser());
+		EXPECT_FALSE(configurations.validate_required().has_value());
+	}
+}
+
+TEST(ConfigurationsTest, ValidateRequiredAllowsCacheAlongsideInstalledReleases)
+{
+	ArgumentFixture arguments({ "--config_path", absent_config_path(), "--device_id", "pc-001", "--queue_url", "https://sqs.example/q", "--s3_bucket", "bucket",
+								"--version_root", "/tmp/yirang-review-service/cache", "--service_root", "/tmp/yirang-review-service" });
+	const Configurations configurations(arguments.parser());
+	EXPECT_TRUE(configurations.validate_required().has_value());
+}
+
 TEST(ConfigurationsTest, PathsAndTitleAreNormalised)
 {
 	{

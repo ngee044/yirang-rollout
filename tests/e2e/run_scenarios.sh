@@ -281,7 +281,7 @@ deploy_release() {
 		return 1
 	fi
 
-	id="$(printf '%s' "$output" | grep -oE 'rel_[0-9]{8}_[0-9]{6}' | head -1 || true)"
+	id="$(printf '%s' "$output" | grep -oE 'rel_[0-9]{8}_[0-9]{6}_[0-9a-f]{32}' | head -1 || true)"
 	if [ -z "$id" ]; then
 		echo "$output" >&2
 		return 1

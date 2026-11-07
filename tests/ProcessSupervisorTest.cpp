@@ -4,6 +4,7 @@
 #include "ProcessIdentity.h"
 
 #include <chrono>
+#include <cerrno>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -20,6 +21,18 @@ using namespace Process;
 namespace
 {
 	constexpr auto kShell = "/bin/sh";
+
+	struct ProcessGroupGuard
+	{
+		pid_t id;
+
+		~ProcessGroupGuard(void)
+		{
+			::kill(-id, SIGKILL);
+			int wait_status = 0;
+			::waitpid(id, &wait_status, 0);
+		}
+	};
 
 	auto wait_until_finished(IProcessSupervisor& supervisor, const ProcessHandle& handle, std::chrono::seconds timeout) -> ProcessStatus
 	{
@@ -158,6 +171,71 @@ TEST(ProcessSupervisorTest, ForcesTerminationWhenGracefulIsIgnored)
 	EXPECT_EQ(status.value().state, ProcessState::Signaled);
 	ASSERT_TRUE(status.value().signal.has_value());
 	EXPECT_EQ(status.value().signal.value(), SIGKILL);
+}
+
+TEST(ProcessSupervisorTest, StopsStubbornDescendantsAfterTheLeaderExitsOnTerm)
+{
+	PosixProcessSupervisor supervisor;
+	const TemporaryDirectory directory;
+	const auto command = "trap 'exit 0' TERM; /bin/sh -c 'trap \"\" TERM; echo $$ > child.pid; : > child.ready; while :; do sleep 0.1; done' & wait";
+
+	const auto handle = supervisor.start({ kShell, { "-c", command }, directory.path().string(), {} });
+	ASSERT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
+	const ProcessGroupGuard guard{ static_cast<pid_t>(handle.value().id) };
+	ASSERT_TRUE(directory.wait_for("child.ready", std::chrono::seconds(5)));
+	const auto child = static_cast<pid_t>(std::stoll(directory.read("child.pid")));
+	ASSERT_EQ(::kill(child, 0), 0);
+
+	const auto stopped = supervisor.stop(handle.value(), std::chrono::seconds(1));
+	ASSERT_TRUE(stopped.has_value()) << (stopped.has_value() ? "" : stopped.error());
+	EXPECT_EQ(::kill(child, 0), -1);
+	EXPECT_EQ(errno, ESRCH);
+}
+
+TEST(ProcessSupervisorTest, StopsStubbornDescendantsWhenTheLeaderAlreadyExited)
+{
+	PosixProcessSupervisor supervisor;
+	const TemporaryDirectory directory;
+	const auto command = "/bin/sh -c 'trap \"\" TERM; echo $$ > child.pid; : > child.ready; while :; do sleep 0.1; done' & "
+						 "until [ -f child.ready ]; do sleep 0.01; done; exit 0";
+
+	const auto handle = supervisor.start({ kShell, { "-c", command }, directory.path().string(), {} });
+	ASSERT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
+	const ProcessGroupGuard guard{ static_cast<pid_t>(handle.value().id) };
+	ASSERT_TRUE(directory.wait_for("child.ready", std::chrono::seconds(5)));
+	ASSERT_EQ(wait_until_finished(supervisor, handle.value(), std::chrono::seconds(5)).state, ProcessState::Exited);
+	const auto child = static_cast<pid_t>(std::stoll(directory.read("child.pid")));
+	ASSERT_EQ(::kill(child, 0), 0);
+
+	const auto stopped = supervisor.stop(handle.value(), std::chrono::seconds(1));
+	ASSERT_TRUE(stopped.has_value()) << (stopped.has_value() ? "" : stopped.error());
+	EXPECT_EQ(::kill(child, 0), -1);
+	EXPECT_EQ(errno, ESRCH);
+}
+
+TEST(ProcessSupervisorTest, StopRefusesADifferentStartToken)
+{
+	PosixProcessSupervisor supervisor;
+	const auto handle = supervisor.start({ kShell, { "-c", "sleep 30" }, "", {} });
+	ASSERT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
+	const ProcessGroupGuard guard{ static_cast<pid_t>(handle.value().id) };
+	ASSERT_NE(handle.value().start_token, 0u);
+
+	const auto stopped = supervisor.stop(ProcessHandle{ handle.value().id, handle.value().start_token + 1 }, std::chrono::seconds(1));
+	ASSERT_FALSE(stopped.has_value());
+	EXPECT_NE(stopped.error().find("not the recorded instance"), std::string::npos);
+	const auto status = supervisor.status(handle.value());
+	ASSERT_TRUE(status.has_value());
+	EXPECT_EQ(status.value().state, ProcessState::Running);
+	EXPECT_TRUE(supervisor.stop(handle.value(), std::chrono::seconds(1)).has_value());
+}
+
+TEST(ProcessSupervisorTest, StopRejectsProcessIdOne)
+{
+	PosixProcessSupervisor supervisor;
+	const auto stopped = supervisor.stop(ProcessHandle{ 1 }, std::chrono::seconds(1));
+	ASSERT_FALSE(stopped.has_value());
+	EXPECT_EQ(stopped.error(), "invalid process handle");
 }
 
 TEST(ProcessSupervisorTest, AppliesWorkingDirectory)

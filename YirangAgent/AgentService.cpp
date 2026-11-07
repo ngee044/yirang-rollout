@@ -1,4 +1,5 @@
 #include "AgentService.h"
+#include "StoragePaths.h"
 
 #include "ArtifactKey.h"
 #include "Logger.h"
@@ -472,15 +473,10 @@ namespace YirangAgent
 			return {};
 		}
 
-		if (!options_.service_root.empty())
+		auto safe_paths = validate_storage_paths(options_.version_root, options_.service_root);
+		if (!safe_paths)
 		{
-			const auto version_root = std::filesystem::weakly_canonical(options_.version_root, error);
-			const auto service_root = std::filesystem::weakly_canonical(options_.service_root, error);
-
-			if (version_root == service_root)
-			{
-				return permanent("version_root must not be the same as service_root");
-			}
+			return permanent(safe_paths.error());
 		}
 
 		std::filesystem::directory_iterator entry(options_.version_root, error);

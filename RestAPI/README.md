@@ -117,7 +117,7 @@ AWS 자격증명은 SDK 기본 체인(환경변수·프로파일·인스턴스 �
 }
 ```
 
-**부분 실패는 치명적으로 다루지 않습니다.** 한 큐가 실패해도 나머지는 발행되고, 실패한 큐가 응답에 그대로 남습니다.
+한 큐가 실패해도 나머지는 발행되고, 실패한 큐가 응답에 그대로 남습니다. 일부 큐에만 발행된 경우에도 HTTP 상태는 202이므로 호출자는 `published`와 `targeted`를 확인해야 합니다. CLI는 이 부분 실패를 표시하고 종료 코드 1을 반환합니다.
 
 요청은 Agent가 거부할 것을 미리 거부합니다 — `install_path`의 `..`·절대 경로·역슬래시, `release_id`의 경로 구분자, 64자 hex가 아닌 `sha256`. 규칙은 `Artifact/ArtifactKey.cpp`의 `make_object_key`를 그대로 옮긴 것입니다. 대문자 해시는 소문자로 정규화해 발행합니다(Agent가 소문자 다이제스트와 비교합니다).
 
@@ -131,12 +131,16 @@ AWS 자격증명은 SDK 기본 체인(환경변수·프로파일·인스턴스 �
 
 `payload`는 손대지 않고 그대로 전달합니다(재직렬화하면 큰 정수가 부동소수점으로 뭉개집니다). `apply_version`·`rollback_version`은 Agent가 `payload.release_id`를 읽으므로 없으면 400입니다.
 
+### `GET /api/v1/results`
+
+결과 큐에서 보고를 읽고 삭제하여 반환합니다. `HEAD`를 포함한 GET 이외의 메서드는 405와 `Allow: GET`으로 거부하며 결과 큐를 소비하지 않습니다.
+
 ### 요청 본문 규칙
 
 - `Content-Type: application/json` 필수 (`UNSUPPORTED_MEDIA_TYPE`)
-- 최대 1 MiB (`REQUEST_TOO_LARGE`)
+- 후행 공백을 포함한 전체 본문이 최대 1 MiB (`REQUEST_TOO_LARGE`)
 - **모르는 필드는 거부**합니다. `install_path`를 `installpath`로 잘못 쓰면 조용히 무시되는 대신 400이 됩니다
-- 본문에 JSON 문서가 둘 이상이면 거부합니다
+- 하나의 JSON 문서 뒤에는 공백만 허용합니다. 추가 문서·닫는 괄호·잘못된 문자는 거부합니다
 
 ### 오류 코드
 

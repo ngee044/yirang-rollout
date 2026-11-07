@@ -31,7 +31,7 @@ func NewHandler(cfg *config.Config, svc deployer, logger *slog.Logger) http.Hand
 	mux.HandleFunc("POST /api/v1/deployments", server.deploy)
 	mux.HandleFunc("POST /api/v1/commands", server.command)
 	mux.HandleFunc("GET /api/v1/commands", server.commands)
-	mux.HandleFunc("GET /api/v1/results", server.results)
+	mux.HandleFunc("/api/v1/results", server.results)
 
 	return recoverPanic(server.logger)(
 		logRequests(server.logger)(

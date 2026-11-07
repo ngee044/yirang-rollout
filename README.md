@@ -2,7 +2,7 @@
 
 > **S3와 메시지 큐만으로 도는 경량 배포 도구.**
 
-`yirang-rollout`은 개발자가 CLI를 한 번 실행하면 로컬 파일 묶음을 S3에 올리고, 로컬 REST API 서버가 대상 PC들의 SQS 큐에 배포 명령을 발행해, 각 PC의 Agent가 **프로세스를 중단하고 새 버전으로 교체한 뒤 재시작**하게 하는 도구입니다.
+`yirang-rollout`은 개발자가 CLI로 로컬 파일 묶음을 S3에 올리면 로컬 REST API 서버가 대상 PC들의 SQS 큐에 다운로드 명령을 발행하고, 별도 적용 명령으로 각 PC의 Agent가 **프로세스를 중단하고 새 버전으로 교체한 뒤 재시작**하게 하는 도구입니다.
 
 **중앙 운영 서버가 없습니다.** Control Plane도, gRPC 제어 채널도, 데이터베이스도 두지 않습니다. REST API 서버는 개발자 본인 머신에서 도는 로컬 인터페이스이고, 필요한 외부 인프라는 S3(또는 MinIO)와 SQS 뿐입니다.
 
@@ -126,7 +126,7 @@ REST API 서버에는 **인증이 없습니다.** 의도된 선택입니다.
 
 설치는 **staging + rename**입니다. 캐시와 서비스 경로가 다른 드라이브일 수 있어 복사가 필요하고, 복사 중 실패한 디렉터리가 `releases/` 에 남지 않아야 하기 때문입니다.
 
-`version_root`와 `service_root`가 같으면 `clean_old_version`이 가동 중인 앱을 지우므로 설정 검증에서 거부합니다.
+`service_root`가 `version_root`와 같거나 그 하위인 구성, 캐시와 설치 경로(`service_root/releases`)가 겹치는 구성은 `clean_old_version`이 가동 중인 앱을 지우므로 설정 검증과 정리 실행 직전에 거부합니다. 심링크를 해석한 실제 경로를 비교합니다.
 
 ## 설정
 
@@ -204,6 +204,7 @@ AWS_REGION=ap-northeast-2
 
 ```bash
 yirang deploy                        # upload_file_list 를 S3 에 올리고 배포를 요청한다
+yirang command download_version rel_1 # S3에 저장된 매니페스트로 기존 릴리스 다운로드를 다시 요청한다
 yirang command current_status         # Agent 명령을 발행한다
 yirang command apply_version rel_1    # release_id 는 두 번째 위치 인자
 yirang results                        # 디바이스가 보고한 결과를 조회한다
@@ -224,7 +225,13 @@ yirang --control_plane_url http://127.0.0.1:8080 \
        deploy
 ```
 
-`deploy`는 **매니페스트를 먼저 만들고 그다음 업로드**합니다. 파일 존재·중복 파일명·SHA-256이 업로드 전에 확정되므로, 올라간 파일과 배포 요청에 실리는 해시가 같은 시점의 것임이 보장됩니다. 업로드가 하나라도 실패하면 배포 요청을 보내지 않습니다.
+`deploy`는 **매니페스트를 먼저 만들고 그다음 업로드**합니다. 파일 존재·중복 파일명·SHA-256을 먼저 검사하고, 아티팩트 업로드 후 `manifests/<release_id>.json`을 저장합니다. 업로드가 하나라도 실패하면 배포 요청을 보내지 않습니다. 해시 계산과 업로드는 원본을 각각 읽으므로 실행 중에는 원본 파일을 변경하지 않아야 합니다.
+
+새 `release_id`는 `rel_YYYYMMDD_HHMMSS_<32자리 난수 hex>` 형식입니다. 같은 초에 실행한 배포도 독립적인 객체 키를 사용하며, 기존 릴리스 ID를 사용하는 명령도 계속 허용합니다.
+
+`command download_version <release_id>`는 `deploy`와 같은 S3 설정이 필요하며 저장된 매니페스트를 읽어 다운로드 명령을 발행합니다. 매니페스트가 없는 과거 릴리스는 이 명령으로 재발행할 수 없습니다. `deploy`와 `download_version`은 다운로드까지만 요청하며 실제 서비스 교체는 `command apply_version <release_id>`로 수행합니다.
+
+일부 장치 큐의 발행만 성공해도 API는 HTTP 202를 반환합니다. CLI는 장치별 결과를 출력한 뒤 부분 실패 시 종료 코드 1을 반환합니다. 결과 조회는 GET만 허용하며 HEAD 요청은 큐를 소비하지 않고 405로 거부합니다.
 
 `--output_format json`을 주면 서버 응답 원문을 그대로 출력합니다. `--help`·`--version`은 로그 레벨과 무관하게 표준 출력으로 나갑니다.
 

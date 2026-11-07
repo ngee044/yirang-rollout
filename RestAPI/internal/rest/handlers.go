@@ -55,6 +55,15 @@ func (s *Server) commands(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) results(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(s.logger, w, http.StatusMethodNotAllowed, envelope{
+			Success: false,
+			Error:   &errorBody{Code: "METHOD_NOT_ALLOWED", Message: r.URL.Path + " accepts GET"},
+		})
+		return
+	}
+
 	batch, err := s.svc.Results(r.Context())
 	if err != nil {
 		writeError(s.logger, w, r, err)

@@ -19,8 +19,6 @@ namespace Process
 		auto status(const ProcessHandle& handle) -> std::expected<ProcessStatus, std::string> override;
 
 	private:
-		auto reap(int64_t id) -> std::expected<ProcessStatus, std::string>;
-
 		auto adopted(int64_t id) -> bool;
 		auto adopted_status(const ProcessHandle& handle) -> std::expected<ProcessStatus, std::string>;
 		auto settle(const ProcessHandle& handle, std::chrono::seconds timeout) -> std::expected<void, std::string>;

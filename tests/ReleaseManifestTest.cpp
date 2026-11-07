@@ -2,6 +2,7 @@
 
 #include "ReleaseManifest.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -178,4 +179,22 @@ TEST(ReleaseManifestTest, ParseIgnoresUnknownFields)
 	EXPECT_EQ(manifest.value().artifacts[0].size_bytes, 5u);
 }
 
-TEST(ReleaseManifestTest, MakeReleaseIdUsesUtcTimestamp) { EXPECT_EQ(ReleaseManifest::make_release_id(fixed_time()), "rel_20231114_221320"); }
+TEST(ReleaseManifestTest, MakeReleaseIdUsesUtcTimestamp)
+{
+	const auto release_id = ReleaseManifest::make_release_id(fixed_time());
+	ASSERT_TRUE(release_id.has_value());
+	EXPECT_TRUE(release_id->starts_with("rel_20231114_221320_"));
+	EXPECT_EQ(release_id->size(), 52u);
+}
+
+TEST(ReleaseManifestTest, ReleaseIdsRemainUniqueAtTheSameTimestamp)
+{
+	std::vector<std::string> identifiers;
+	for (int attempt = 0; attempt < 256; ++attempt)
+	{
+		auto generated = ReleaseManifest::make_release_id(fixed_time());
+		ASSERT_TRUE(generated.has_value());
+		EXPECT_EQ(std::find(identifiers.begin(), identifiers.end(), generated.value()), identifiers.end());
+		identifiers.push_back(generated.value());
+	}
+}

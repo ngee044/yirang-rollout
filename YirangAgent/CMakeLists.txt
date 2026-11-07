@@ -8,12 +8,14 @@ set(CORE_HEADER_FILES
     Configurations.h
     AgentMessage.h
     AgentService.h
+    StoragePaths.h
 )
 
 set(CORE_SOURCE_FILES
     Configurations.cpp
     AgentMessage.cpp
     AgentService.cpp
+    StoragePaths.cpp
 )
 
 add_library(${CORE_LIBRARY_NAME} STATIC ${CORE_SOURCE_FILES} ${CORE_HEADER_FILES})

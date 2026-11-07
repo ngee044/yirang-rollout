@@ -7,9 +7,15 @@
 #include <boost/json.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <format>
 #include <iostream>
+#include <sstream>
 
 using namespace Utilities;
 
@@ -17,6 +23,47 @@ namespace DeployCli
 {
 	namespace
 	{
+		class TemporaryManifest
+		{
+		public:
+			TemporaryManifest(void) = default;
+			TemporaryManifest(const TemporaryManifest&) = delete;
+			auto operator=(const TemporaryManifest&) -> TemporaryManifest& = delete;
+
+			~TemporaryManifest(void)
+			{
+				if (!directory_.empty())
+				{
+					std::error_code ignored;
+					std::filesystem::remove_all(directory_, ignored);
+				}
+			}
+
+			auto prepare(void) -> std::expected<void, std::string>
+			{
+				std::error_code error;
+				const auto root = std::filesystem::temp_directory_path(error);
+				if (error)
+				{
+					return std::unexpected(std::format("cannot locate temporary directory: {}", error.message()));
+				}
+
+				auto pattern = (root / "yirang-manifest-XXXXXX").string();
+				if (::mkdtemp(pattern.data()) == nullptr)
+				{
+					return std::unexpected(std::format("cannot create temporary manifest directory: {}", std::strerror(errno)));
+				}
+
+				directory_ = pattern;
+				return {};
+			}
+
+			auto path(void) const -> std::string { return (directory_ / "manifest.json").string(); }
+
+		private:
+			std::filesystem::path directory_;
+		};
+
 		const std::vector<std::string> agent_commands{ "download_version", "apply_version",		   "current_status",  "clean_old_version",
 													   "rollback_version", "update_configuration", "restart_service", "reboot_device" };
 
@@ -87,6 +134,79 @@ namespace DeployCli
 
 			return std::format("{} — {}", status_code, body);
 		}
+
+		auto validate_publication(const std::string& body) -> std::expected<void, std::string>
+		{
+			auto object = parse_object(body);
+			if (!object)
+			{
+				return std::unexpected(object.error());
+			}
+
+			const auto* success = object->if_contains("success");
+			const auto* data = object->if_contains("data");
+			if (success == nullptr || !success->is_bool() || !success->as_bool() || data == nullptr || !data->is_object())
+			{
+				return std::unexpected("invalid publication response: success and data are required");
+			}
+
+			const auto* targeted = data->as_object().if_contains("targeted");
+			const auto* published = data->as_object().if_contains("published");
+			const auto* deliveries = data->as_object().if_contains("deliveries");
+			if (targeted == nullptr || !targeted->is_int64() || targeted->as_int64() <= 0 || published == nullptr || !published->is_int64() || published->as_int64() < 0
+				|| published->as_int64() > targeted->as_int64() || deliveries == nullptr || !deliveries->is_array()
+				|| deliveries->as_array().size() != static_cast<uint64_t>(targeted->as_int64()))
+			{
+				return std::unexpected("invalid publication response: inconsistent delivery counts");
+			}
+
+			int64_t successful = 0;
+			for (const auto& delivery : deliveries->as_array())
+			{
+				if (!delivery.is_object())
+				{
+					return std::unexpected("invalid publication response: delivery is not an object");
+				}
+				const auto* error = delivery.as_object().if_contains("error");
+				if (error != nullptr && !error->is_string())
+				{
+					return std::unexpected("invalid publication response: delivery error is not a string");
+				}
+				if (error == nullptr || error->as_string().empty())
+				{
+					++successful;
+				}
+			}
+
+			if (successful != published->as_int64())
+			{
+				return std::unexpected("invalid publication response: published count disagrees with deliveries");
+			}
+			if (successful != targeted->as_int64())
+			{
+				return std::unexpected(std::format("publication failed for {} of {} device(s)", targeted->as_int64() - successful, targeted->as_int64()));
+			}
+
+			return {};
+		}
+
+		auto download_payload(const Release::Manifest& manifest) -> boost::json::object
+		{
+			boost::json::array artifacts;
+			for (const auto& entry : manifest.artifacts)
+			{
+				boost::json::object element;
+				element["install_path"] = entry.install_path;
+				element["sha256"] = entry.sha256;
+				element["size_bytes"] = entry.size_bytes;
+				artifacts.push_back(element);
+			}
+
+			boost::json::object payload;
+			payload["release_id"] = manifest.release_id;
+			payload["artifacts"] = artifacts;
+			return payload;
+		}
 	}
 
 	Commands::Commands(const Configurations& configurations,
@@ -142,7 +262,12 @@ namespace DeployCli
 		}
 
 		const auto now = std::chrono::system_clock::now();
-		const auto release_id = Release::ReleaseManifest::make_release_id(now);
+		auto generated_id = Release::ReleaseManifest::make_release_id(now);
+		if (!generated_id)
+		{
+			return std::unexpected(generated_id.error());
+		}
+		const auto& release_id = generated_id.value();
 
 		auto manifest = Release::ReleaseManifest::build(configurations_.upload_file_list(), release_id, now);
 		if (!manifest)
@@ -158,21 +283,8 @@ namespace DeployCli
 			return std::unexpected(uploaded.error());
 		}
 
-		boost::json::array artifacts;
-		for (const auto& entry : manifest.value().artifacts)
-		{
-			boost::json::object element;
-			element["install_path"] = entry.install_path;
-			element["sha256"] = entry.sha256;
-			element["size_bytes"] = entry.size_bytes;
-
-			artifacts.push_back(element);
-		}
-
-		boost::json::object request;
-		request["release_id"] = manifest.value().release_id;
+		auto request = download_payload(manifest.value());
 		request["group"] = configurations_.target_group();
-		request["artifacts"] = artifacts;
 
 		auto response = client_->post("/api/v1/deployments", boost::json::serialize(request));
 		if (!response)
@@ -187,7 +299,7 @@ namespace DeployCli
 
 		present(std::format("deployed {}", release_id), response.value().body);
 
-		return {};
+		return validate_publication(response.value().body);
 	}
 
 	auto Commands::command(const std::vector<std::string>& arguments) -> std::expected<void, std::string>
@@ -233,7 +345,21 @@ namespace DeployCli
 		}
 
 		boost::json::object payload;
-		if (name == "update_configuration")
+		if (name == "download_version")
+		{
+			if (arguments.size() != 2)
+			{
+				return std::unexpected("download_version requires a release_id (yirang command download_version <release_id>)");
+			}
+
+			auto manifest = download_manifest(arguments.at(1));
+			if (!manifest)
+			{
+				return std::unexpected(manifest.error());
+			}
+			payload = download_payload(manifest.value());
+		}
+		else if (name == "update_configuration")
 		{
 			if (arguments.size() < 2)
 			{
@@ -279,7 +405,7 @@ namespace DeployCli
 
 		present(std::format("published {}", name), response.value().body);
 
-		return {};
+		return validate_publication(response.value().body);
 	}
 
 	auto Commands::results(const std::vector<std::string>& arguments) -> std::expected<void, std::string>
@@ -327,7 +453,91 @@ namespace DeployCli
 			Logger::handle().write(LogTypes::Information, std::format("uploaded {} -> {}", entry.install_path, key.value()));
 		}
 
+		TemporaryManifest temporary;
+		auto prepared = temporary.prepare();
+		if (!prepared)
+		{
+			return std::unexpected(prepared.error());
+		}
+
+		{
+			std::ofstream sink(temporary.path(), std::ios::binary | std::ios::trunc);
+			sink << Release::ReleaseManifest::serialize(manifest);
+			sink.close();
+			if (!sink)
+			{
+				return std::unexpected("cannot write the release manifest");
+			}
+		}
+
+		auto sent = store_->upload(std::format("manifests/{}.json", manifest.release_id), temporary.path());
+		if (!sent)
+		{
+			return std::unexpected(std::format("cannot upload manifest for '{}': {}", manifest.release_id, sent.error()));
+		}
 		return {};
+	}
+
+	auto Commands::download_manifest(const std::string& release_id) -> std::expected<Release::Manifest, std::string>
+	{
+		auto valid = Artifact::validate_release_id(release_id);
+		if (!valid)
+		{
+			return std::unexpected(valid.error());
+		}
+		if (store_ == nullptr || configurations_.s3_bucket().empty())
+		{
+			return std::unexpected("download_version requires an artifact store and --s3_bucket");
+		}
+
+		TemporaryManifest temporary;
+		auto prepared = temporary.prepare();
+		if (!prepared)
+		{
+			return std::unexpected(prepared.error());
+		}
+
+		auto downloaded = store_->download(std::format("manifests/{}.json", release_id), temporary.path());
+		if (!downloaded)
+		{
+			return std::unexpected(std::format("cannot download manifest for '{}': {}", release_id, downloaded.error()));
+		}
+
+		std::ifstream source(temporary.path(), std::ios::binary);
+		if (!source.is_open())
+		{
+			return std::unexpected("cannot open the downloaded manifest");
+		}
+		std::ostringstream buffer;
+		buffer << source.rdbuf();
+		if (source.bad())
+		{
+			return std::unexpected("cannot read the downloaded manifest");
+		}
+
+		auto manifest = Release::ReleaseManifest::parse(buffer.str());
+		if (!manifest)
+		{
+			return std::unexpected(manifest.error());
+		}
+		if (manifest->release_id != release_id)
+		{
+			return std::unexpected("downloaded manifest release_id does not match the requested release");
+		}
+		if (manifest->artifacts.empty())
+		{
+			return std::unexpected("downloaded manifest artifacts must not be empty");
+		}
+		for (const auto& entry : manifest->artifacts)
+		{
+			auto key = Artifact::make_object_key(release_id, entry.install_path);
+			if (!key)
+			{
+				return std::unexpected(key.error());
+			}
+		}
+
+		return manifest;
 	}
 
 	auto Commands::present(const std::string& title, const std::string& json_body) -> void

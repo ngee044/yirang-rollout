@@ -5,16 +5,29 @@
 #include "Configurations.h"
 #include "Confirmation.h"
 #include "IArtifactStore.h"
+#include "ReleaseManifest.h"
 #include "RestClient.h"
 
+#include <boost/json.hpp>
+
+#include <atomic>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
+#include <format>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 using namespace DeployCli;
 
@@ -25,30 +38,173 @@ namespace
 	public:
 		auto upload(const std::string& object_key, const std::string& local_path) -> std::expected<void, std::string> override
 		{
-			if (fail_uploads_)
+			if (fail_uploads_ || (fail_manifest_ && object_key.starts_with("manifests/")))
 			{
 				return std::unexpected("upload refused");
 			}
 
 			uploaded_.insert({ object_key, local_path });
+			std::ifstream source(local_path, std::ios::binary);
+			std::ostringstream buffer;
+			buffer << source.rdbuf();
+			contents_[object_key] = buffer.str();
+			order_.push_back(object_key);
 
 			return {};
 		}
 
 		auto presign(const std::string&) -> std::expected<std::string, std::string> override { return std::unexpected("not used"); }
 
-		auto download(const std::string&, const std::string&) -> std::expected<void, std::string> override { return std::unexpected("not used"); }
+		auto download(const std::string& object_key, const std::string& local_path) -> std::expected<void, std::string> override
+		{
+			downloaded_path_ = local_path;
+			const auto found = contents_.find(object_key);
+			if (found == contents_.end())
+			{
+				return std::unexpected("object not found");
+			}
+			std::ofstream target(local_path, std::ios::binary);
+			target << found->second;
+			return {};
+		}
 
 		auto exists(const std::string&) -> std::expected<bool, std::string> override { return std::unexpected("not used"); }
 
 		auto uploaded(void) const -> std::map<std::string, std::string> { return uploaded_; }
 
 		auto fail_uploads(void) -> void { fail_uploads_ = true; }
+		auto fail_manifest(void) -> void { fail_manifest_ = true; }
+		auto contents(void) const -> std::map<std::string, std::string> { return contents_; }
+		auto contents(const std::string& key, const std::string& body) -> void { contents_[key] = body; }
+		auto order(void) const -> std::vector<std::string> { return order_; }
+		auto downloaded_path(void) const -> std::string { return downloaded_path_; }
 
 	private:
 		std::map<std::string, std::string> uploaded_;
+		std::map<std::string, std::string> contents_;
+		std::vector<std::string> order_;
+		std::string downloaded_path_;
 		bool fail_uploads_{ false };
+		bool fail_manifest_{ false };
 	};
+
+	class PublicationServer
+	{
+	public:
+		explicit PublicationServer(const std::string& body)
+		{
+			listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+			sockaddr_in address{};
+			address.sin_family = AF_INET;
+			address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			address.sin_port = 0;
+			EXPECT_GE(listen_fd_, 0);
+			EXPECT_EQ(::bind(listen_fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+			EXPECT_EQ(::listen(listen_fd_, 1), 0);
+			socklen_t length = sizeof(address);
+			EXPECT_EQ(::getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&address), &length), 0);
+			port_ = ntohs(address.sin_port);
+			worker_ = std::thread(&PublicationServer::serve, this, body);
+		}
+
+		~PublicationServer(void)
+		{
+			stopping_ = true;
+			if (worker_.joinable())
+			{
+				worker_.join();
+			}
+			::close(listen_fd_);
+		}
+
+		auto url(void) const -> std::string { return std::format("http://127.0.0.1:{}", port_); }
+
+		auto request(void) -> std::string
+		{
+			std::scoped_lock guard(mutex_);
+			return request_;
+		}
+
+	private:
+		auto serve(const std::string& body) -> void
+		{
+			while (!stopping_)
+			{
+				pollfd descriptor{ listen_fd_, POLLIN, 0 };
+				if (::poll(&descriptor, 1, 50) <= 0)
+				{
+					continue;
+				}
+				const int client = ::accept(listen_fd_, nullptr, nullptr);
+				if (client < 0)
+				{
+					return;
+				}
+				timeval timeout{ 2, 0 };
+				::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+#ifdef __APPLE__
+				int no_sigpipe = 1;
+				::setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
+#endif
+				std::string request;
+				char buffer[4096];
+				while (request.size() < 1024 * 1024)
+				{
+					const auto received = ::recv(client, buffer, sizeof(buffer), 0);
+					if (received <= 0)
+					{
+						break;
+					}
+					request.append(buffer, static_cast<size_t>(received));
+					const auto header_end = request.find("\r\n\r\n");
+					const auto length_start = request.find("Content-Length: ");
+					if (header_end != std::string::npos && length_start != std::string::npos)
+					{
+						size_t content_length = 0;
+						const auto parsed = std::from_chars(request.data() + length_start + 16, request.data() + header_end, content_length);
+						if (parsed.ec == std::errc() && request.size() >= header_end + 4 + content_length)
+						{
+							break;
+						}
+					}
+				}
+				{
+					std::scoped_lock guard(mutex_);
+					request_ = request;
+				}
+
+				const auto response = std::format("HTTP/1.1 202 Accepted\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.size(), body);
+				size_t offset = 0;
+				while (offset < response.size())
+				{
+#ifdef MSG_NOSIGNAL
+					const auto sent = ::send(client, response.data() + offset, response.size() - offset, MSG_NOSIGNAL);
+#else
+					const auto sent = ::send(client, response.data() + offset, response.size() - offset, 0);
+#endif
+					if (sent <= 0)
+					{
+						break;
+					}
+					offset += static_cast<size_t>(sent);
+				}
+				::close(client);
+				return;
+			}
+		}
+
+		int listen_fd_{ -1 };
+		uint16_t port_{ 0 };
+		std::atomic<bool> stopping_{ false };
+		std::thread worker_;
+		std::mutex mutex_;
+		std::string request_;
+	};
+
+	const std::string published_response
+		= R"({"success":true,"data":{"command":"download_version","targeted":1,"published":1,"deliveries":[{"queue":"pc-001","message_id":"message-1"}]}})";
+	const std::string partial_response
+		= R"({"success":true,"data":{"command":"download_version","targeted":2,"published":1,"deliveries":[{"queue":"pc-001","message_id":"message-1"},{"queue":"pc-002","error":"AccessDenied"}]}})";
 
 	class TemporaryTree
 	{
@@ -195,11 +351,16 @@ TEST(DeployCliTest, DeployUploadsEveryFileUnderTheReleaseKey)
 	ASSERT_FALSE(result.has_value());
 
 	const auto uploaded = store->uploaded();
-	ASSERT_EQ(uploaded.size(), 2u);
+	ASSERT_EQ(uploaded.size(), 3u);
 
 	int matched = 0;
 	for (const auto& [key, source] : uploaded)
 	{
+		if (key.starts_with("manifests/"))
+		{
+			EXPECT_FALSE(std::filesystem::exists(source));
+			continue;
+		}
 		EXPECT_EQ(key.rfind("releases/rel_", 0), 0u) << key;
 
 		if (key.ends_with("/app.exe"))
@@ -234,6 +395,142 @@ TEST(DeployCliTest, DeployStopsWhenAnUploadFails)
 	EXPECT_NE(result.error().find("cannot upload"), std::string::npos) << result.error();
 	EXPECT_EQ(result.error().find("cannot reach"), std::string::npos) << result.error();
 	EXPECT_TRUE(store->uploaded().empty());
+}
+
+TEST(DeployCliTest, PublicationRequiresEveryDeviceToSucceed)
+{
+	for (const auto& body : { published_response, partial_response })
+	{
+		PublicationServer server(body);
+		auto configurations = make_configurations({ "--control_plane_url", server.url() });
+		auto client = std::make_shared<RestClient>(server.url(), "", std::chrono::seconds(3));
+		Commands commands(*configurations, nullptr, client);
+		const auto result = commands.run("command", { "current_status" });
+		if (body == published_response)
+		{
+			EXPECT_TRUE(result.has_value()) << (result ? "" : result.error());
+		}
+		else
+		{
+			ASSERT_FALSE(result.has_value());
+			EXPECT_NE(result.error().find("publication failed for 1 of 2"), std::string::npos);
+		}
+		EXPECT_TRUE(server.request().starts_with("POST /api/v1/commands "));
+	}
+}
+
+TEST(DeployCliTest, RejectsMalformedPublicationResponses)
+{
+	for (const auto& body : { R"({"success":true})", R"({"success":true,"data":{"targeted":1,"published":1,"deliveries":[{"error":"denied"}]}})",
+							  R"({"success":true,"data":{"targeted":2,"published":2,"deliveries":[{}]}})" })
+	{
+		PublicationServer server(body);
+		auto configurations = make_configurations({ "--control_plane_url", server.url() });
+		auto client = std::make_shared<RestClient>(server.url(), "", std::chrono::seconds(3));
+		Commands commands(*configurations, nullptr, client);
+		const auto result = commands.run("command", { "current_status" });
+		ASSERT_FALSE(result.has_value());
+		EXPECT_NE(result.error().find("invalid publication response"), std::string::npos) << result.error();
+	}
+}
+
+TEST(DeployCliTest, DeployReportsPartialPublicationFailure)
+{
+	TemporaryTree tree;
+	const auto file = tree.write("app.exe", "binary");
+	PublicationServer server(partial_response);
+	auto configurations = make_configurations({ "--control_plane_url", server.url(), "--s3_bucket", "b", "--upload_file_list", file });
+	auto client = std::make_shared<RestClient>(server.url(), "", std::chrono::seconds(3));
+	Commands commands(*configurations, std::make_shared<RecordingStore>(), client);
+	const auto result = commands.run("deploy", {});
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("publication failed for 1 of 2"), std::string::npos);
+	EXPECT_TRUE(server.request().starts_with("POST /api/v1/deployments "));
+}
+
+TEST(DeployCliTest, DeployManifestCanReissueTheSameDownload)
+{
+	TemporaryTree tree;
+	const auto file = tree.write("app.exe", "binary");
+	auto store = std::make_shared<RecordingStore>();
+	boost::json::object deployment;
+	{
+		PublicationServer server(published_response);
+		auto configurations = make_configurations({ "--control_plane_url", server.url(), "--s3_bucket", "b", "--upload_file_list", file });
+		auto client = std::make_shared<RestClient>(server.url(), "", std::chrono::seconds(3));
+		Commands commands(*configurations, store, client);
+		const auto result = commands.run("deploy", {});
+		ASSERT_TRUE(result.has_value()) << (result ? "" : result.error());
+		const auto request = server.request();
+		deployment = boost::json::parse(request.substr(request.find("\r\n\r\n") + 4)).as_object();
+	}
+	const auto release_id = std::string(deployment.at("release_id").as_string());
+	const auto manifest_key = std::format("manifests/{}.json", release_id);
+	ASSERT_EQ(store->order().size(), 2u);
+	EXPECT_EQ(store->order().back(), manifest_key);
+	const auto manifest = Release::ReleaseManifest::parse(store->contents().at(manifest_key));
+	ASSERT_TRUE(manifest.has_value());
+	EXPECT_EQ(manifest->release_id, release_id);
+	EXPECT_FALSE(std::filesystem::exists(store->uploaded().at(manifest_key)));
+
+	PublicationServer server(published_response);
+	auto configurations = make_configurations({ "--control_plane_url", server.url(), "--s3_bucket", "b" });
+	auto client = std::make_shared<RestClient>(server.url(), "", std::chrono::seconds(3));
+	Commands commands(*configurations, store, client);
+	const auto result = commands.run("command", { "download_version", release_id });
+	ASSERT_TRUE(result.has_value()) << (result ? "" : result.error());
+	const auto request = server.request();
+	EXPECT_TRUE(request.starts_with("POST /api/v1/commands "));
+	const auto command = boost::json::parse(request.substr(request.find("\r\n\r\n") + 4)).as_object();
+	EXPECT_EQ(command.at("command"), "download_version");
+	EXPECT_EQ(command.at("payload").as_object().at("release_id"), deployment.at("release_id"));
+	EXPECT_EQ(command.at("payload").as_object().at("artifacts"), deployment.at("artifacts"));
+	EXPECT_FALSE(std::filesystem::exists(store->downloaded_path()));
+}
+
+TEST(DeployCliTest, ManifestUploadFailurePreventsPublication)
+{
+	TemporaryTree tree;
+	const auto file = tree.write("app.exe", "binary");
+	PublicationServer server(published_response);
+	auto configurations = make_configurations({ "--control_plane_url", server.url(), "--s3_bucket", "b", "--upload_file_list", file });
+	auto client = std::make_shared<RestClient>(server.url(), "", std::chrono::seconds(3));
+	auto store = std::make_shared<RecordingStore>();
+	store->fail_manifest();
+	Commands commands(*configurations, store, client);
+	const auto result = commands.run("deploy", {});
+	ASSERT_FALSE(result.has_value());
+	EXPECT_NE(result.error().find("cannot upload manifest"), std::string::npos);
+	EXPECT_TRUE(server.request().empty());
+	EXPECT_EQ(store->uploaded().size(), 1u);
+}
+
+TEST(DeployCliTest, DownloadRejectsMissingOrInvalidManifestBeforePublication)
+{
+	PublicationServer server(published_response);
+	auto configurations = make_configurations({ "--control_plane_url", server.url(), "--s3_bucket", "b" });
+	auto client = std::make_shared<RestClient>(server.url(), "", std::chrono::seconds(3));
+	auto store = std::make_shared<RecordingStore>();
+	Commands commands(*configurations, store, client);
+	const auto missing = commands.run("command", { "download_version", "rel_1" });
+	ASSERT_FALSE(missing.has_value());
+	EXPECT_NE(missing.error().find("cannot download manifest"), std::string::npos);
+	const std::map<std::string, std::string> invalid_manifests{
+		{ "not json", "cannot parse manifest" },
+		{ R"({"release_id":"rel_other","created_at":"2026-11-07T00:00:00Z","artifacts":[]})", "does not match" },
+		{ R"({"release_id":"rel_1","created_at":"2026-11-07T00:00:00Z","artifacts":[]})", "artifacts must not be empty" },
+		{ R"({"release_id":"rel_1","created_at":"2026-11-07T00:00:00Z","artifacts":[{"install_path":"../outside","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size_bytes":1}]})",
+		  "must not contain '..'" }
+	};
+	for (const auto& [body, reason] : invalid_manifests)
+	{
+		store->contents("manifests/rel_1.json", body);
+		const auto result = commands.run("command", { "download_version", "rel_1" });
+		ASSERT_FALSE(result.has_value()) << body;
+		EXPECT_NE(result.error().find(reason), std::string::npos) << result.error();
+		EXPECT_FALSE(std::filesystem::exists(store->downloaded_path()));
+	}
+	EXPECT_TRUE(server.request().empty());
 }
 
 TEST(DeployCliTest, DeployRejectsMissingUploadFile)
@@ -506,7 +803,7 @@ TEST(DeployCliTest, NonDestructiveCommandsAreNeverHeldForConfirmation)
 
 	Commands commands(*configurations, nullptr, unreachable_client(), confirmation);
 
-	for (const auto& name : { "download_version", "apply_version", "current_status", "rollback_version" })
+	for (const auto& name : { "apply_version", "current_status", "rollback_version" })
 	{
 		const auto result = commands.run("command", { name });
 

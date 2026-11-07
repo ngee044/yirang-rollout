@@ -40,7 +40,11 @@ func decodeJSON[T any](w http.ResponseWriter, r *http.Request) (T, error) {
 		return value, decodeError(err)
 	}
 
-	if decoder.More() {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return value, decodeError(err)
+		}
 		return value, apierr.BadRequest("request body must contain exactly one JSON object")
 	}
 

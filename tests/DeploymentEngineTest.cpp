@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "DeploymentEngine.h"
+#include "PosixProcessSupervisor.h"
 
 #include <boost/json.hpp>
 
@@ -10,6 +11,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace Deploy;
@@ -432,6 +434,97 @@ TEST(DeploymentEngineTest, RollbackToSwitchesAndRestarts)
 	ASSERT_TRUE(state.has_value());
 	EXPECT_EQ(state.value().active, "rel_1");
 	EXPECT_EQ(fixture.supervisor->started().size(), 3u);
+}
+
+TEST(DeploymentEngineTest, RollbackRestartsTheActiveReleaseWhenActivationFails)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+	ASSERT_TRUE(fixture.engine->apply("rel_2", tree.stage("rel_2")).has_value());
+	std::filesystem::create_directory(std::filesystem::path(tree.service_root()) / "state.json.tmp");
+
+	const auto reverted = fixture.engine->rollback_to("rel_1");
+	ASSERT_FALSE(reverted.has_value());
+	EXPECT_NE(reverted.error().find("cannot activate"), std::string::npos) << reverted.error();
+	EXPECT_NE(reverted.error().find("previous release restarted"), std::string::npos) << reverted.error();
+	EXPECT_TRUE(fixture.engine->running());
+	ASSERT_EQ(fixture.supervisor->started().size(), 3u);
+	EXPECT_NE(fixture.supervisor->started().back().find("releases/rel_2/app.exe"), std::string::npos);
+
+	const auto state = fixture.installer->state();
+	ASSERT_TRUE(state.has_value());
+	EXPECT_EQ(state.value().active, "rel_2");
+	EXPECT_EQ(read_record(tree).at("release_id").as_string(), "rel_2");
+}
+
+TEST(DeploymentEngineTest, RollbackReportsWhenActivationAndRecoveryBothFail)
+{
+	TemporaryTree tree;
+	auto fixture = make_fixture(tree);
+
+	ASSERT_TRUE(fixture.engine->apply("rel_1", tree.stage("rel_1")).has_value());
+	ASSERT_TRUE(fixture.engine->apply("rel_2", tree.stage("rel_2")).has_value());
+	std::filesystem::create_directory(std::filesystem::path(tree.service_root()) / "state.json.tmp");
+	fixture.supervisor->fail_start();
+
+	const auto reverted = fixture.engine->rollback_to("rel_1");
+	ASSERT_FALSE(reverted.has_value());
+	EXPECT_NE(reverted.error().find("cannot activate"), std::string::npos) << reverted.error();
+	EXPECT_NE(reverted.error().find("previous release did not restart"), std::string::npos) << reverted.error();
+	EXPECT_FALSE(fixture.engine->running());
+	const auto state = fixture.installer->state();
+	ASSERT_TRUE(state.has_value());
+	EXPECT_EQ(state.value().active, "rel_2");
+}
+
+TEST(DeploymentEngineTest, StartActiveRunsWithRelativeServiceAndWorkingDirectories)
+{
+	for (const auto explicit_working_directory : { false, true })
+	{
+		SCOPED_TRACE(explicit_working_directory);
+		TemporaryTree tree;
+		const auto source = tree.stage("rel_1", "app.sh");
+		{
+			std::ofstream script(std::filesystem::path(source) / "app.sh", std::ios::trunc);
+			script << "#!/bin/sh\nprintf ready > started.txt\nexec /bin/sleep 30\n";
+		}
+
+		Install::InstallOptions install_options;
+		install_options.service_root = std::filesystem::relative(tree.service_root()).string();
+		auto installer = std::make_shared<Install::ReleaseInstaller>(install_options);
+		ASSERT_TRUE(installer->install("rel_1", source).has_value());
+		ASSERT_TRUE(installer->activate("rel_1").has_value());
+
+		ServiceSpec service;
+		service.executable = "app.sh";
+		service.stop_timeout = std::chrono::seconds(1);
+		if (explicit_working_directory)
+		{
+			service.working_directory = install_options.service_root;
+		}
+		auto supervisor = std::make_shared<Process::PosixProcessSupervisor>();
+		DeploymentEngine engine(installer, supervisor, service, Health::HealthCheckSpec{});
+		struct StopGuard
+		{
+			DeploymentEngine& engine;
+			~StopGuard(void) { engine.stop(); }
+		} guard{ engine };
+
+		const auto resumed = engine.start_active();
+		ASSERT_TRUE(resumed.has_value()) << (resumed.has_value() ? "" : resumed.error());
+		const auto expected_directory = explicit_working_directory ? tree.service_root() : installer->release_directory("rel_1");
+		const auto marker = std::filesystem::path(expected_directory) / "started.txt";
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!std::filesystem::exists(marker) && std::chrono::steady_clock::now() < deadline)
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		EXPECT_TRUE(std::filesystem::exists(marker));
+		EXPECT_TRUE(engine.running());
+		EXPECT_TRUE(engine.stop().has_value());
+	}
 }
 
 TEST(DeploymentEngineTest, RollbackToRefusesAReleaseThatIsNotInstalled)

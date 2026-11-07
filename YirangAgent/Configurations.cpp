@@ -1,4 +1,5 @@
 #include "Configurations.h"
+#include "StoragePaths.h"
 
 #include "Converter.h"
 #include "File.h"
@@ -158,12 +159,7 @@ namespace YirangAgent
 			return std::unexpected("result_queue_url must not be the same as queue_url");
 		}
 
-		if (!service_root_.empty() && version_root_ == service_root_)
-		{
-			return std::unexpected("version_root must not be the same as service_root");
-		}
-
-		return {};
+		return validate_storage_paths(version_root_, service_root_);
 	}
 
 	auto Configurations::load(void) -> void

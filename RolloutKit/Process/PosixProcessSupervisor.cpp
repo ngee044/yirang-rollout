@@ -29,6 +29,37 @@ namespace Process
 		constexpr auto kExecFailedExitCode = 127;
 		constexpr auto kPollInterval = std::chrono::milliseconds(20);
 
+		auto process_group_exists(int64_t id) -> std::expected<bool, std::string>
+		{
+			if (::kill(-static_cast<pid_t>(id), 0) == 0 || errno == EPERM)
+			{
+				return true;
+			}
+
+			if (errno == ESRCH)
+			{
+				return false;
+			}
+
+			return std::unexpected(std::format("cannot query process group {}: {}", id, std::strerror(errno)));
+		}
+
+		auto signal_process_group(const ProcessHandle& handle, int signal) -> std::expected<void, std::string>
+		{
+			auto token = start_token(handle.id);
+			if (token && handle.start_token != 0 && token.value() != handle.start_token)
+			{
+				return std::unexpected(std::format("process {} is not the recorded instance", handle.id));
+			}
+
+			if (::kill(-static_cast<pid_t>(handle.id), signal) != 0 && errno != ESRCH)
+			{
+				return std::unexpected(std::format("cannot send signal {} to process group {}: {}", signal, handle.id, std::strerror(errno)));
+			}
+
+			return {};
+		}
+
 		auto build_arguments(const ProcessStartOptions& options, std::vector<std::string>& storage) -> std::vector<char*>
 		{
 			storage.clear();
@@ -241,12 +272,10 @@ namespace Process
 
 	auto PosixProcessSupervisor::stop(const ProcessHandle& handle, std::chrono::seconds timeout) -> std::expected<void, std::string>
 	{
-		if (handle.id <= 0)
+		if (handle.id <= 1)
 		{
 			return std::unexpected("invalid process handle");
 		}
-
-		const auto is_adopted = adopted(handle.id);
 
 		auto current = status(handle);
 		if (!current)
@@ -254,14 +283,21 @@ namespace Process
 			return std::unexpected(current.error());
 		}
 
-		if (current.value().state != ProcessState::Running)
+		auto group_exists = process_group_exists(handle.id);
+		if (!group_exists)
+		{
+			return std::unexpected(group_exists.error());
+		}
+
+		if (!group_exists.value() && current.value().state != ProcessState::Running)
 		{
 			return {};
 		}
 
-		if (::kill(-static_cast<pid_t>(handle.id), SIGTERM) != 0 && errno != ESRCH)
+		auto signaled = signal_process_group(handle, SIGTERM);
+		if (!signaled)
 		{
-			return std::unexpected(std::format("cannot send SIGTERM to {}: {}", handle.id, std::strerror(errno)));
+			return std::unexpected(signaled.error());
 		}
 
 		const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -273,7 +309,13 @@ namespace Process
 				return std::unexpected(polled.error());
 			}
 
-			if (polled.value().state != ProcessState::Running)
+			group_exists = process_group_exists(handle.id);
+			if (!group_exists)
+			{
+				return std::unexpected(group_exists.error());
+			}
+
+			if (!group_exists.value() && polled.value().state != ProcessState::Running)
 			{
 				return {};
 			}
@@ -281,23 +323,13 @@ namespace Process
 			std::this_thread::sleep_for(kPollInterval);
 		}
 
-		if (::kill(-static_cast<pid_t>(handle.id), SIGKILL) != 0 && errno != ESRCH)
+		signaled = signal_process_group(handle, SIGKILL);
+		if (!signaled)
 		{
-			return std::unexpected(std::format("cannot send SIGKILL to {}: {}", handle.id, std::strerror(errno)));
+			return std::unexpected(signaled.error());
 		}
 
-		if (is_adopted)
-		{
-			return settle(handle, timeout);
-		}
-
-		auto reaped = reap(handle.id);
-		if (!reaped)
-		{
-			return std::unexpected(reaped.error());
-		}
-
-		return {};
+		return settle(handle, timeout);
 	}
 
 	auto PosixProcessSupervisor::status(const ProcessHandle& handle) -> std::expected<ProcessStatus, std::string>
@@ -414,53 +446,28 @@ namespace Process
 	auto PosixProcessSupervisor::settle(const ProcessHandle& handle, std::chrono::seconds timeout) -> std::expected<void, std::string>
 	{
 		const auto deadline = std::chrono::steady_clock::now() + timeout;
-		while (std::chrono::steady_clock::now() < deadline)
+		do
 		{
-			auto polled = adopted_status(handle);
+			auto polled = status(handle);
 			if (!polled)
 			{
 				return std::unexpected(polled.error());
 			}
 
-			if (polled.value().state != ProcessState::Running)
+			auto group_exists = process_group_exists(handle.id);
+			if (!group_exists)
+			{
+				return std::unexpected(group_exists.error());
+			}
+
+			if (!group_exists.value() && polled.value().state != ProcessState::Running)
 			{
 				return {};
 			}
 
 			std::this_thread::sleep_for(kPollInterval);
-		}
+		} while (std::chrono::steady_clock::now() < deadline);
 
-		return std::unexpected(std::format("process {} is still alive after SIGKILL", handle.id));
-	}
-
-	auto PosixProcessSupervisor::reap(int64_t id) -> std::expected<ProcessStatus, std::string>
-	{
-		int wait_status = 0;
-		pid_t result = 0;
-		while (true)
-		{
-			result = ::waitpid(static_cast<pid_t>(id), &wait_status, 0);
-			if (result >= 0 || errno != EINTR)
-			{
-				break;
-			}
-		}
-
-		if (result < 0)
-		{
-			if (errno == ECHILD)
-			{
-				return ProcessStatus{ ProcessState::Unknown, std::nullopt, std::nullopt };
-			}
-
-			return std::unexpected(std::format("cannot wait for process {}: {}", id, std::strerror(errno)));
-		}
-
-		const auto status = to_status(wait_status);
-
-		std::scoped_lock<std::mutex> guard(mutex_);
-		finished_.insert({ id, status });
-
-		return status;
+		return std::unexpected(std::format("process group {} is still present after SIGKILL", handle.id));
 	}
 }

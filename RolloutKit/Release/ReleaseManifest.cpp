@@ -3,6 +3,7 @@
 #include <boost/json.hpp>
 
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include <algorithm>
 #include <array>
@@ -110,8 +111,14 @@ namespace Release
 		return to_hex(digest.data(), digest_length);
 	}
 
-	auto ReleaseManifest::make_release_id(const std::chrono::system_clock::time_point& when) -> std::string
+	auto ReleaseManifest::make_release_id(const std::chrono::system_clock::time_point& when) -> std::expected<std::string, std::string>
 	{
+		std::array<unsigned char, 16> random_bytes{};
+		if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1)
+		{
+			return std::unexpected("cannot generate release identifier");
+		}
+
 		const std::time_t time = std::chrono::system_clock::to_time_t(when);
 
 		std::tm utc{};
@@ -124,7 +131,7 @@ namespace Release
 		char buffer[32] = {};
 		std::snprintf(buffer, sizeof(buffer), "rel_%04d%02d%02d_%02d%02d%02d", utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec);
 
-		return std::string(buffer);
+		return std::format("{}_{}", buffer, to_hex(random_bytes.data(), random_bytes.size()));
 	}
 
 	auto ReleaseManifest::build(const std::vector<std::string>& upload_file_list, const std::string& release_id, const std::chrono::system_clock::time_point& created_at)

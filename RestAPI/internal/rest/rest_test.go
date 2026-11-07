@@ -21,8 +21,10 @@ type stubService struct {
 	batch  *service.ResultBatch
 	err    error
 
-	deployed *service.DeployRequest
-	panics   bool
+	deployed     *service.DeployRequest
+	panics       bool
+	resultCalls  int
+	commandCalls int
 }
 
 func (s *stubService) Deploy(_ context.Context, request service.DeployRequest) (*service.PublishResult, error) {
@@ -34,10 +36,12 @@ func (s *stubService) Deploy(_ context.Context, request service.DeployRequest) (
 }
 
 func (s *stubService) Command(context.Context, service.CommandRequest) (*service.PublishResult, error) {
+	s.commandCalls++
 	return s.result, s.err
 }
 
 func (s *stubService) Results(context.Context) (*service.ResultBatch, error) {
+	s.resultCalls++
 	return s.batch, s.err
 }
 
@@ -133,6 +137,49 @@ func TestDeployRejectsOversizedBody(t *testing.T) {
 	}
 }
 
+func TestWriteEndpointsValidateTheEntireBody(t *testing.T) {
+	endpoints := []struct {
+		path string
+		body string
+	}{
+		{"/api/v1/deployments", `{"release_id":"rel_1"}`},
+		{"/api/v1/commands", `{"command":"current_status"}`},
+	}
+
+	for _, endpoint := range endpoints {
+		t.Run(endpoint.path, func(t *testing.T) {
+			tests := []struct {
+				name   string
+				suffix string
+				status int
+			}{
+				{"closing bracket", "]", http.StatusBadRequest},
+				{"closing brace", "}", http.StatusBadRequest},
+				{"invalid garbage", "invalid", http.StatusBadRequest},
+				{"second object", "{}", http.StatusBadRequest},
+				{"oversized whitespace", strings.Repeat(" ", maxRequestBytes), http.StatusRequestEntityTooLarge},
+				{"trailing whitespace", " \t\r\n", http.StatusAccepted},
+				{"whitespace at limit", strings.Repeat(" ", maxRequestBytes-len(endpoint.body)), http.StatusAccepted},
+			}
+
+			for _, test := range tests {
+				t.Run(test.name, func(t *testing.T) {
+					svc := &stubService{result: &service.PublishResult{}}
+					recorder := call(t, newTestHandler(svc), http.MethodPost, endpoint.path, endpoint.body+test.suffix)
+
+					if recorder.Code != test.status {
+						t.Fatalf("status = %d, want %d (%s)", recorder.Code, test.status, recorder.Body.String())
+					}
+					called := svc.deployed != nil || svc.commandCalls != 0
+					if called != (test.status == http.StatusAccepted) {
+						t.Errorf("service called = %t, accepted = %t", called, test.status == http.StatusAccepted)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestServiceErrorKeepsItsStatusAndCode(t *testing.T) {
 	tests := []struct {
 		err    error
@@ -201,6 +248,28 @@ func TestResultsReturnsTheBatch(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "pc-001") {
 		t.Errorf("the report is missing from %s", recorder.Body.String())
+	}
+	if svc.resultCalls != 1 {
+		t.Errorf("Results calls = %d, want 1", svc.resultCalls)
+	}
+}
+
+func TestResultsRejectsNonGetWithoutConsumingBatch(t *testing.T) {
+	for _, method := range []string{http.MethodHead, http.MethodPost, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			svc := &stubService{batch: &service.ResultBatch{Count: 1}}
+			recorder := call(t, newTestHandler(svc), method, "/api/v1/results", "")
+
+			if recorder.Code != http.StatusMethodNotAllowed {
+				t.Errorf("status = %d, want 405", recorder.Code)
+			}
+			if allowed := recorder.Header().Get("Allow"); allowed != http.MethodGet {
+				t.Errorf("Allow = %q, want GET", allowed)
+			}
+			if svc.resultCalls != 0 {
+				t.Errorf("Results calls = %d, want 0", svc.resultCalls)
+			}
+		})
 	}
 }
 

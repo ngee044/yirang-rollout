@@ -35,6 +35,7 @@ namespace DeployCli
 		auto results(const std::vector<std::string>& arguments) -> std::expected<void, std::string>;
 
 		auto upload_release(const Release::Manifest& manifest) -> std::expected<void, std::string>;
+		auto download_manifest(const std::string& release_id) -> std::expected<Release::Manifest, std::string>;
 
 		auto present(const std::string& title, const std::string& json_body) -> void;
 

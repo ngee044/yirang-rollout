@@ -124,7 +124,10 @@ namespace Deploy
 		auto activated = installer_->activate(release_id);
 		if (!activated)
 		{
-			return std::unexpected(activated.error());
+			auto restored = start_active();
+
+			return std::unexpected(std::format("cannot activate '{}': {}{}", release_id, activated.error(),
+											   restored ? " (previous release restarted)" : " (previous release did not restart)"));
 		}
 
 		auto launched = launch(release_id);
@@ -346,10 +349,14 @@ namespace Deploy
 			return std::unexpected(executable_valid.error());
 		}
 
-		const auto release_root = std::filesystem::path(installer_->release_directory(release_id));
-		const auto executable = release_root / service_.executable;
-
 		std::error_code error;
+		const auto release_root = std::filesystem::absolute(installer_->release_directory(release_id), error);
+		if (error)
+		{
+			return std::unexpected(std::format("cannot resolve release directory '{}': {}", release_id, error.message()));
+		}
+
+		const auto executable = release_root / service_.executable;
 		if (!std::filesystem::exists(executable, error))
 		{
 			return std::unexpected(std::format("executable '{}' is missing from the release", service_.executable));
@@ -370,7 +377,12 @@ namespace Deploy
 		Process::ProcessStartOptions options;
 		options.executable_path = executable.string();
 		options.arguments = service_.arguments;
-		options.working_directory = service_.working_directory.empty() ? release_root.string() : service_.working_directory;
+		const auto working_directory = service_.working_directory.empty() ? release_root : std::filesystem::absolute(service_.working_directory, error);
+		if (error)
+		{
+			return std::unexpected(std::format("cannot resolve working directory '{}': {}", service_.working_directory, error.message()));
+		}
+		options.working_directory = working_directory.string();
 
 		auto started = supervisor_->start(options);
 		if (!started)
